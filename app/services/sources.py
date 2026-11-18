@@ -12,6 +12,8 @@ import httpx
 from app.config import Settings
 
 BIGDATACLOUD_BATCH = 1000
+# dan.me.uk bloquea a quien descarga más de una vez cada 30 minutos.
+DANME_MIN_INTERVAL_MIN = 30
 BIGDATACLOUD_MAX_PAGES = 50
 
 
@@ -23,6 +25,8 @@ class SourceError(Exception):
 class Source:
     name: str
     interval_min: int
+    # Mínimo absoluto entre descargas, que ni la actualización manual puede saltarse.
+    min_interval_min: int
     enabled: bool
     fetch: Callable[[httpx.Client], set[str]]
 
@@ -71,7 +75,10 @@ def _fetch_bigdatacloud(url: str, api_key: str) -> Callable[[httpx.Client], set[
             response = _get(
                 client,
                 url,
-                params={"batchSize": BIGDATACLOUD_BATCH, "offset": offset, "key": api_key},
+                params={"batchSize": BIGDATACLOUD_BATCH, "offset": offset},
+                # La clave va en una cabecera y no en la URL, para que no quede
+                # registrada en logs de proxies ni en mensajes de error.
+                headers={"x-bdc-key": api_key},
             )
             try:
                 data = response.json()
@@ -96,18 +103,21 @@ def build_sources(settings: Settings) -> list[Source]:
         Source(
             name="torproject",
             interval_min=settings.torproject_interval_min,
+            min_interval_min=1,
             enabled=True,
             fetch=_fetch_text_list(settings.torproject_url),
         ),
         Source(
             name="danme",
             interval_min=settings.danme_interval_min,
+            min_interval_min=DANME_MIN_INTERVAL_MIN,
             enabled=True,
             fetch=_fetch_text_list(settings.danme_url),
         ),
         Source(
             name="bigdatacloud",
             interval_min=settings.bigdatacloud_interval_min,
+            min_interval_min=1,
             # Sin API key la fuente se omite en lugar de fallar en cada ciclo.
             enabled=bool(settings.bigdatacloud_api_key),
             fetch=_fetch_bigdatacloud(

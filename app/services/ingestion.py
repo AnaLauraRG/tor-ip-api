@@ -52,7 +52,9 @@ def _is_due(status: SourceStatus, interval_min: int) -> bool:
     return last is None or utcnow() - last >= timedelta(minutes=interval_min)
 
 
-def _ingest_source(session: Session, source: Source, client: httpx.Client) -> str:
+def _ingest_source(
+    session: Session, source: Source, client: httpx.Client, force: bool
+) -> str:
     status = session.get(SourceStatus, source.name)
     if status is None:
         status = SourceStatus(source=source.name)
@@ -65,7 +67,9 @@ def _ingest_source(session: Session, source: Source, client: httpx.Client) -> st
 
     # El intervalo se mide desde el último intento (no desde el último éxito),
     # para no insistir contra una fuente que está fallando o limitándonos.
-    if not _is_due(status, source.interval_min):
+    # Con force se usa el mínimo absoluto de la fuente en lugar del intervalo normal.
+    interval = source.min_interval_min if force else source.interval_min
+    if not _is_due(status, interval):
         return "skipped"
 
     # Se guarda el intento antes de descargar: si el proceso se reinicia a
@@ -108,8 +112,12 @@ def run_cycle(
     sources: list[Source],
     client: httpx.Client,
     stale_after_hours: int,
+    force: bool = False,
 ) -> dict[str, str]:
-    """Ejecuta un ciclo de ingesta y devuelve el resultado por fuente."""
+    """Ejecuta un ciclo de ingesta y devuelve el resultado por fuente.
+
+    Devuelve un diccionario vacío si ya había otro ciclo en curso.
+    """
     if not _cycle_lock.acquire(blocking=False):
         logger.info("Ya hay un ciclo de ingesta en curso; se omite este")
         return {}
@@ -118,7 +126,7 @@ def run_cycle(
         with session_factory() as session:
             for source in sources:
                 try:
-                    results[source.name] = _ingest_source(session, source, client)
+                    results[source.name] = _ingest_source(session, source, client, force)
                 except Exception:
                     session.rollback()
                     logger.exception("Error inesperado en la fuente %s", source.name)

@@ -35,7 +35,8 @@ class FakeSources:
         return httpx.Response(403, text="bloqueado") if name in self.fail else ok()
 
     def _bigdatacloud(self, request):
-        assert request.url.params["key"] == API_KEY
+        assert request.headers["x-bdc-key"] == API_KEY
+        assert "key" not in request.url.params
         offset = int(request.url.params["offset"])
         size = int(request.url.params["batchSize"])
         nodes = [{"ip": ip} for ip in self.bigdatacloud[offset : offset + size]]
@@ -49,10 +50,16 @@ def fake():
     return FakeSources()
 
 
-def _run(fake, api_key=API_KEY):
+def _run(fake, api_key=API_KEY, force=False):
     settings = Settings(_env_file=None, bigdatacloud_api_key=api_key)
     with httpx.Client(transport=httpx.MockTransport(fake.handler)) as client:
-        return run_cycle(SessionLocal, build_sources(settings), client, 48)
+        return run_cycle(SessionLocal, build_sources(settings), client, 48, force=force)
+
+
+def _age_attempts(db, minutes):
+    for status in db.scalars(select(SourceStatus)).all():
+        status.last_attempt_at = utcnow() - timedelta(minutes=minutes)
+    db.commit()
 
 
 def _ips(db):
@@ -158,3 +165,24 @@ def test_stale_ips_are_purged(fake, db):
     _run(fake)
     assert "8.8.8.8" not in _ips(db)
     assert "7.7.7.7" in _ips(db)
+
+
+def test_force_skips_normal_interval_but_not_danme_minimum(fake, db):
+    _run(fake)
+    _age_attempts(db, 10)
+
+    results = _run(fake, force=True)
+    assert results == {"torproject": "ok", "danme": "skipped", "bigdatacloud": "ok"}
+    assert fake.calls == {"torproject": 2, "danme": 1, "bigdatacloud": 2}
+
+
+def test_force_downloads_danme_after_30_minutes(fake, db):
+    _run(fake)
+    _age_attempts(db, 31)
+    assert _run(fake, force=True)["danme"] == "ok"
+    assert fake.calls["danme"] == 2
+
+
+def test_danme_interval_cannot_be_configured_below_30():
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, danme_interval_min=10)

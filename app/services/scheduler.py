@@ -14,7 +14,8 @@ from app.services.sources import build_sources
 logger = logging.getLogger(__name__)
 
 
-def _job() -> None:
+def run_ingestion(force: bool = False) -> dict[str, str]:
+    """Ejecuta un ciclo de ingesta con un cliente HTTP configurado."""
     transport = httpx.HTTPTransport(retries=1)
     headers = {"User-Agent": "tor-ip-api/1.0"}
     with httpx.Client(
@@ -23,8 +24,12 @@ def _job() -> None:
         headers=headers,
         follow_redirects=True,
     ) as client:
-        run_cycle(
-            SessionLocal, build_sources(settings), client, settings.stale_after_hours
+        return run_cycle(
+            SessionLocal,
+            build_sources(settings),
+            client,
+            settings.stale_after_hours,
+            force=force,
         )
 
 
@@ -34,7 +39,7 @@ def start_scheduler() -> BackgroundScheduler:
     fuentes cuyo intervalo ya venció."""
     scheduler = BackgroundScheduler(timezone="UTC")
     scheduler.add_job(
-        _job,
+        run_ingestion,
         "interval",
         minutes=settings.scheduler_tick_min,
         next_run_time=datetime.now(UTC),

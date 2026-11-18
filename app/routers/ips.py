@@ -7,8 +7,9 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import ExcludedIP, TorIP
 from app.schemas import IPListResponse
+from app.security import require_reader
 
-router = APIRouter(prefix="/ips", tags=["ips"])
+router = APIRouter(prefix="/ips", tags=["ips"], dependencies=[Depends(require_reader)])
 
 
 @router.get("", response_model=IPListResponse, summary="Todas las IPs de Tor")
