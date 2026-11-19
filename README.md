@@ -2,7 +2,7 @@
 
 API REST que unifica las IPs de nodos de salida de Tor de varias fuentes externas y permite excluir IPs del listado. Incluye autenticación con JWT, control de acceso por roles y auditoría de todas las peticiones.
 
-> Estado: núcleo, autenticación, roles y auditoría completos. El informe SAST, las capturas y el documento de despliegue en la nube se agregan en fases posteriores.
+> Estado: núcleo, autenticación, roles, auditoría e informe SAST completos. Las capturas y el documento de despliegue en la nube se agregan en fases posteriores.
 
 ## Endpoints
 
@@ -96,6 +96,12 @@ pytest
 ```
 
 Las pruebas simulan las fuentes externas; no hacen peticiones a internet. Para correrlas contra PostgreSQL: `TEST_DATABASE_URL=postgresql+psycopg://... pytest`.
+
+## Análisis de seguridad y CI
+
+- **Informe SAST:** [`docs/sast-report.md`](docs/sast-report.md), con los resultados de Bandit, Semgrep, pip-audit, Gitleaks y Trivy, y la decisión tomada sobre cada hallazgo.
+- **GitHub Actions** (`.github/workflows/ci.yml`): en cada `push` corre las pruebas contra PostgreSQL, Bandit, Semgrep, pip-audit, Trivy sobre la imagen y Gitleaks sobre todo el historial.
+- **Dependabot** (`.github/dependabot.yml`): propone cada semana actualizaciones de dependencias, imagen base y acciones de CI.
 
 ## Decisiones de diseño
 

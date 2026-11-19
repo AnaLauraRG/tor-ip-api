@@ -61,7 +61,8 @@ def authenticate(db: Session, username: str, password: str) -> User | None:
         # qué usuarios existen midiendo el tiempo de respuesta.
         bcrypt.checkpw(password.encode()[:BCRYPT_MAX_BYTES], _dummy_hash())
         return None
-    if not verify_password(password, user.password_hash) or not user.is_active:
+    # is_active es una columna booleana, no un método (falso positivo de Semgrep).
+    if not verify_password(password, user.password_hash) or not user.is_active:  # nosemgrep: is-function-without-parentheses
         return None
     return user
 
@@ -101,7 +102,8 @@ def get_current_user(
     # El rol y el estado se leen de la base, no del token: si un usuario se
     # desactiva, pierde el acceso aunque su token siga vigente.
     user = db.scalar(select(User).where(User.username == payload["sub"]))
-    if user is None or not user.is_active:
+    # is_active es una columna booleana, no un método (falso positivo de Semgrep).
+    if user is None or not user.is_active:  # nosemgrep: is-function-without-parentheses
         raise _CREDENTIALS_ERROR
     request.state.username = user.username
     return user
