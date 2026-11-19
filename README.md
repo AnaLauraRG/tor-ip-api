@@ -77,6 +77,29 @@ curl -H "$AUTH" "http://localhost:8000/audit?limit=20"
 curl http://localhost:8000/health
 ```
 
+## Colección de Postman
+
+[`postman/tor-ip-api.postman_collection.json`](postman/tor-ip-api.postman_collection.json) contiene 25 peticiones, organizadas en el orden en que deben ejecutarse:
+
+| Carpeta | Contenido |
+|---|---|
+| 00 · Salud | Estado del servicio y de las fuentes |
+| 01 · Autenticación | Login correcto y fallidos |
+| 02 · Endpoints obligatorios | Los tres endpoints del reto y sus errores (409, 422) |
+| 03 · Control de acceso | Sin token, token manipulado, usuario lector permitido y prohibido |
+| 04 · Endpoints adicionales | Exclusiones, usuarios, actualización de fuentes y auditoría |
+| 05 · Límite de login | Bloqueo con 429 tras varios intentos fallidos (ejecutar al final) |
+
+Para usarla: en Postman, **Import** → selecciona el archivo → en la pestaña **Variables** de la colección escribe la contraseña del admin en `adminPass` (columna *Current value*) → **Run collection**. Cada petición incluye pruebas que verifican su respuesta; los tokens se guardan solos y el usuario lector se crea con credenciales aleatorias.
+
+También se puede ejecutar desde la terminal con [Newman](https://www.npmjs.com/package/newman):
+
+```bash
+newman run postman/tor-ip-api.postman_collection.json --env-var "adminPass=TU_CLAVE"
+```
+
+La carpeta 05 bloquea el login desde tu IP durante 15 minutos.
+
 ## Códigos de respuesta
 
 | Código | Significado |
