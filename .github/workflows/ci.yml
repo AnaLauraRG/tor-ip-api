@@ -89,7 +89,7 @@ jobs:
           vuln-type: os,library
           severity: CRITICAL,HIGH
 
-    secrets:
+  secrets:
     name: Secretos en el historial (Gitleaks)
     runs-on: ubuntu-latest
     # En los pull requests, Gitleaks consulta a la API la lista de commits del PR.
