@@ -9,12 +9,12 @@
 | Herramienta | Qué analiza | Resultado inicial | Resultado final |
 |---|---|---|---|
 | Bandit 1.9.4 | Patrones inseguros en código Python | 0 hallazgos en `app/` | 0 hallazgos |
-| Semgrep 1.186.0 | Código, Dockerfile, Compose y secretos (638 reglas) | 4 hallazgos (2 WARNING, 2 INFO) | 1 hallazgo INFO aceptado con mitigación |
+| Semgrep 1.186.0 | Código, Dockerfile, Compose y secretos (638 reglas) | 4 hallazgos (2 WARNING, 2 INFO), más 2 WARNING tras corregir lo de Trivy | 1 hallazgo INFO aceptado con mitigación |
 | pip-audit 2.10.1 | Vulnerabilidades conocidas (CVE) en 32 paquetes, incluidos los transitivos | 0 vulnerabilidades | 0 vulnerabilidades |
 | Gitleaks 8.30.1 | Secretos en los archivos del proyecto | 0 hallazgos | 0 hallazgos |
-| Trivy | Imagen Docker: sistema operativo y librerías | Se ejecuta en CI y en el entorno local (sección 6) | — |
+| Trivy | Imagen Docker: sistema operativo y todas las librerías presentes | 6 HIGH: 1 en la imagen base y 5 en copias internas de pip | 0 vulnerabilidades |
 
-No se encontraron vulnerabilidades explotables. De los cuatro hallazgos de Semgrep, uno era una mejora válida que se corrigió, dos eran falsos positivos y uno es una recomendación que se acepta con mitigación.
+En el código y en las dependencias del proyecto no se encontraron vulnerabilidades explotables. Trivy encontró 6 vulnerabilidades HIGH en componentes que trae la imagen base, ajenos al proyecto, que se corrigieron en el `Dockerfile`. De los cuatro hallazgos de Semgrep, uno era una mejora válida que se corrigió, dos eran falsos positivos y uno es una recomendación que se acepta con mitigación.
 
 Además, los análisis se ejecutan automáticamente en cada `push` mediante GitHub Actions (sección 7), de modo que el análisis es continuo y no puntual.
 
@@ -62,6 +62,10 @@ semgrep scan --config p/python --config p/dockerfile --config p/secrets --metric
 | S2 | `is-function-without-parentheses` | WARNING | `app/security.py`, login | **Falso positivo**, suprimido con justificación |
 | S3 | `is-function-without-parentheses` | WARNING | `app/security.py`, validación de token | **Falso positivo**, suprimido con justificación |
 | S4 | `dockerfile-source-not-pinned` | INFO | `Dockerfile`, `FROM` | **Aceptado con mitigación** |
+| S5 | `remove-package-cache` | WARNING | `Dockerfile`, `apt-get` | **Corregido** |
+| S6 | `avoid-apt-get-upgrade` | WARNING | `Dockerfile`, `apt-get` | **Aceptado**, contradice un hallazgo de Trivy |
+
+S5 y S6 aparecieron al volver a analizar el `Dockerfile` después de las correcciones de Trivy (sección 6).
 
 **S1. Healthcheck en formato shell.** El `HEALTHCHECK` usaba la forma de texto (`CMD python -c ...`), que ejecuta el comando a través de `/bin/sh`. Se cambió a la forma JSON (`CMD ["python", "-c", ...]`), que ejecuta el proceso directamente: no depende de la shell, no interpreta caracteres especiales y recibe las señales del sistema de forma correcta.
 
@@ -82,6 +86,10 @@ skopeo inspect --raw docker://docker.io/library/python:3.13-slim | sha256sum
 ```
 
 y escribir `FROM docker.io/library/python:3.13-slim@sha256:<resultado>`.
+
+**S5. Caché de apt.** Se agregó `apt-get clean` además de borrar `/var/lib/apt/lists/`, para que la caché de paquetes no quede en la imagen.
+
+**S6. `apt-get upgrade` en el `Dockerfile`.** La regla parte de que la imagen base oficial siempre está actualizada, así que actualizar paquetes dentro del `Dockerfile` sería innecesario. Trivy demostró lo contrario: la imagen `python:3.13-slim` traía una versión de zlib con una vulnerabilidad HIGH ya corregida por Debian (T1). Las dos herramientas dan recomendaciones opuestas y aquí prevalece la evidencia concreta: se mantiene el `upgrade` y la regla se suprime solo en esa línea, con el motivo escrito en el `Dockerfile`. La alternativa, actualizar solo `zlib1g`, obligaría a editar el `Dockerfile` con cada nuevo parche de Debian.
 
 ## 4. pip-audit
 
@@ -111,22 +119,61 @@ En CI, Gitleaks analiza **todo el historial de Git**, no solo la versión actual
 
 ## 6. Trivy (imagen Docker)
 
-Trivy analiza la imagen completa: los paquetes del sistema operativo de la imagen base (Debian) y las librerías de Python instaladas.
+Trivy analiza la imagen completa: los paquetes del sistema operativo de la imagen base (Debian 13) y todas las librerías de Python presentes, incluidas las que no instaló el proyecto.
 
-**En CI** se ejecuta en cada `push` con estos criterios:
-
-- Severidad CRITICAL o HIGH.
-- Solo vulnerabilidades que ya tienen corrección disponible (`ignore-unfixed`). Las que no tienen parche publicado no se pueden resolver actualizando y bloquearían el CI sin una acción posible.
-
-**En el entorno local** (Kali con Podman):
+**Comando** (Kali con Podman):
 
 ```bash
 podman save -o /tmp/tor-ip-api.tar tor-ip-api-api
-podman run --rm -v /tmp/tor-ip-api.tar:/image.tar:Z docker.io/aquasec/trivy:latest \
-    image --input /image.tar --severity CRITICAL,HIGH --ignore-unfixed
+podman run --rm -v /tmp/tor-ip-api.tar:/image.tar:Z docker.io/aquasec/trivy:latest image --input /image.tar --severity CRITICAL,HIGH --ignore-unfixed
 ```
 
-**Resultado:** _pendiente de agregar la salida de la ejecución._
+Se filtran las severidades CRITICAL y HIGH, y solo las vulnerabilidades que ya tienen corrección publicada (`--ignore-unfixed`): las que no tienen parche no se pueden resolver actualizando.
+
+### Resultado inicial: 6 vulnerabilidades HIGH, 0 CRITICAL
+
+| # | Paquete | Versión | CVE / aviso | Corregido en | Origen |
+|---|---|---|---|---|---|
+| T1 | zlib1g | 1:1.3.dfsg+really1.3.1-1+b1 | CVE-2026-85091 | 1:1.3.dfsg+really1.3.1-1+deb13u1 | Imagen base (Debian) |
+| T2 | msgpack | 1.1.2 | CVE-2026-114613 | 1.2.3 | Copia interna de pip |
+| T3 | msgpack | 1.1.2 | GHSA-6v7p-g79w-8964 | 1.2.1 | Copia interna de pip |
+| T4 | setuptools | 70.3.0 | CVE-2025-47273 | 78.1.1 | Copia interna de pip |
+| T5 | urllib3 | 2.7.0 | CVE-2026-97687 | 2.8.0 | Copia interna de pip |
+| T6 | urllib3 | 2.7.0 | CVE-2026-97689 | 2.8.0 | Copia interna de pip |
+
+Las 32 librerías que instala el proyecto, y que pip-audit ya había revisado, salieron limpias. Trivy tampoco encontró secretos en la imagen.
+
+### Análisis
+
+**T1. zlib en la imagen base.** Es un desbordamiento de memoria en la librería de compresión del sistema. La aplicación no la usa directamente, pero Python y otras herramientas de la imagen sí la cargan. Debian ya publicó la versión corregida; la imagen base `python:3.13-slim` se construyó antes de ese parche.
+
+**T2 a T6. Librerías dentro de pip.** pip no instala sus dependencias como paquetes normales: trae copias propias dentro de `pip/_vendor/`. Se verificó en la lista de componentes de pip 26.2.2 (`pip/_vendor/vendor.txt`), que declara exactamente `msgpack==1.1.2`, `urllib3==2.7.0` y `setuptools==70.3.0`. Por eso pip-audit no las detectó: solo revisa lo declarado en `requirements.txt`, mientras que Trivy revisa todo lo que hay en la imagen. Es un buen ejemplo de por qué conviene combinar ambas herramientas.
+
+El riesgo real es bajo: la aplicación nunca ejecuta pip ni importa esas copias (las peticiones HTTP usan `httpx`). Aun así, la corrección es sencilla y reduce la superficie de ataque.
+
+### Correcciones en el `Dockerfile`
+
+| Hallazgo | Corrección |
+|---|---|
+| T1 | `apt-get update && apt-get upgrade -y` al construir la imagen, para aplicar los parches de Debian publicados después de la imagen base (ver también S6 en la sección 3) |
+| T2 a T6 | `pip uninstall -y pip` después de instalar las dependencias. pip solo se necesita durante la construcción; sin él desaparecen sus copias vulnerables y, además, un atacante que comprometa el contenedor no puede instalar paquetes |
+
+### Resultado tras las correcciones: 0 vulnerabilidades
+
+Se reconstruyó la imagen sin caché (`docker compose build --no-cache api`) y se repitió el análisis con los mismos criterios:
+
+| Objetivo | Antes | Después |
+|---|---|---|
+| Sistema operativo (Debian 13.7, 87 paquetes) | 1 HIGH | 0 |
+| Copias internas de pip | 5 HIGH | No existen (pip desinstalado) |
+| Librerías del proyecto (31 paquetes) | 0 | 0 |
+| Secretos en la imagen | 0 | 0 |
+
+pip y su lista de componentes ya no aparecen en el análisis, y la API sigue funcionando sin él: el healthcheck y `/health` responden con normalidad.
+
+### En CI
+
+El trabajo "Imagen Docker" de GitHub Actions ejecuta Trivy con los mismos criterios en cada `push` y falla si encuentra vulnerabilidades CRITICAL o HIGH con corrección disponible. Así, una vulnerabilidad nueva en la imagen base se detecta aunque nadie modifique el código.
 
 ## 7. Integración continua (GitHub Actions)
 
@@ -175,3 +222,4 @@ Otras medidas verificadas con pruebas automáticas:
 | La imagen base no está fijada por digest | Trivy en CI y Dependabot | Fijar el digest |
 | Los tokens no se pueden revocar individualmente | Expiran en 30 minutos; desactivar al usuario corta el acceso | Lista de revocación por `jti` si se requiere |
 | El esquema de base de datos se crea con `create_all` | Válido para el alcance del reto | Migraciones con Alembic |
+| Las dependencias indirectas no están fijadas: entre los dos análisis de Trivy, `annotated_doc` pasó de 0.0.6 a 0.0.7 sin cambios en el proyecto | Las dependencias directas sí están fijadas; pip-audit y Trivy se ejecutan en cada `push` | Archivo de bloqueo con todas las versiones y sus hashes (`pip-compile --generate-hashes`) |
