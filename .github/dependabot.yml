@@ -1,0 +1,20 @@
+# Dependabot abre pull requests semanales cuando hay nuevas versiones de las
+# dependencias de Python, de la imagen base de Docker o de las acciones de CI.
+# Cada PR pasa por el flujo de CI antes de poder integrarse.
+
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

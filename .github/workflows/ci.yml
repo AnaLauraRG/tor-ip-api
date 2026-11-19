@@ -1,0 +1,102 @@
+# Integración continua: pruebas y análisis de seguridad en cada push y pull request.
+# Las acciones se fijan por commit (SHA) y no por etiqueta, para que nadie pueda
+# cambiar el código que se ejecuta moviendo una etiqueta.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Pruebas (PostgreSQL)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: docker.io/library/postgres:16-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: tor_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d tor_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - name: Pruebas
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://ci:ci@localhost:5432/tor_test
+        run: pytest -q
+
+  sast:
+    name: SAST y dependencias
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - run: pip install bandit==1.9.4 pip-audit==2.10.1 semgrep==1.186.0
+      - name: Bandit (falla con hallazgos de severidad media o alta)
+        run: bandit -r app -ll
+      - name: Semgrep (falla con hallazgos de severidad WARNING o ERROR)
+        run: >-
+          semgrep scan
+          --config p/python --config p/dockerfile --config p/secrets
+          --severity WARNING --severity ERROR
+          --error --metrics=off
+      - name: pip-audit (falla con vulnerabilidades conocidas)
+        run: pip-audit -r requirements.txt
+
+  container:
+    name: Imagen Docker (Trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Construir la imagen
+        run: docker build -t tor-ip-api:${{ github.sha }} .
+      - name: Trivy (falla con vulnerabilidades CRITICAL o HIGH que ya tengan corrección)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: tor-ip-api:${{ github.sha }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+
+  secrets:
+    name: Secretos en el historial (Gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # todo el historial, no solo el último commit
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
