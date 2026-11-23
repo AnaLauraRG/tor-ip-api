@@ -216,7 +216,7 @@ def descripcion():
         "Dos roles: <b>reader</b> (solo consulta) y <b>admin</b> (gestión completa).",
         "Auditoría de todas las peticiones, incluidas las rechazadas.",
         "Límite de intentos de login para frenar ataques de fuerza bruta.",
-        "Endpoints extra: listar y borrar exclusiones, gestión de usuarios, actualización manual "
+        "Endpoints extra: listar y borrar exclusiones, gestión de usuarios, actualización manual " +
         "de las fuentes, consulta de auditoría y estado del servicio.",
         "Informe de análisis de seguridad (SAST) e integración continua con GitHub Actions.",
     ])
@@ -267,7 +267,7 @@ def arquitectura():
 def requisitos_y_config():
     h = [p("3. Requisitos y descarga", "h1")]
     h += vinetas([
-        "<b>Git</b>, para descargar el repositorio, y acceso a él: es privado, así que hay que aceptar "
+        "<b>Git</b>, para descargar el repositorio, y acceso a él: es privado, así que hay que aceptar " +
         "antes la invitación de GitHub.",
         "<b>Con Docker:</b> Docker con Docker Compose, o Podman con su socket activo.",
         "<b>Sin Docker:</b> Python 3.13 y, opcionalmente, PostgreSQL 16.",
@@ -357,12 +357,12 @@ def autenticacion():
         'curl -X POST http://localhost:8000/auth/login \\\n'
         '     -d "username=admin&password=TU_CLAVE"')
     h += vinetas([
-        "El token es un JWT firmado con HS256 que expira a los 30 minutos. Solo contiene el nombre de "
+        "El token es un JWT firmado con HS256 que expira a los 30 minutos. Solo contiene el nombre de " +
         "usuario; el rol se consulta en la base en cada petición.",
-        "Las contraseñas se guardan con bcrypt. Si el usuario no existe o la contraseña es incorrecta, la "
+        "Las contraseñas se guardan con bcrypt. Si el usuario no existe o la contraseña es incorrecta, la " +
         "respuesta y el tiempo de respuesta son los mismos, para no revelar qué usuarios existen.",
         "Tras 5 intentos fallidos en 15 minutos desde la misma IP, el login responde 429 hasta que pase la ventana.",
-        "En Swagger UI (" + C("http://localhost:8000/docs") + ") se usa el botón <b>Authorize</b>; "
+        "En Swagger UI (" + C("http://localhost:8000/docs") + ") se usa el botón <b>Authorize</b>; " +
         "desde ese momento todas las peticiones llevan el token.",
     ])
     return h
@@ -552,16 +552,16 @@ def permisos():
                "auditoría (403)."))
     h.append(p("8.3 Cómo se aplica", "h2"))
     h += vinetas([
-        "<b>En cada petición:</b> se valida la firma y la expiración del token, se busca al usuario en la base "
-        "y se comprueba que siga activo, y por último se compara su rol con los roles que acepta el método. "
+        "<b>En cada petición:</b> se valida la firma y la expiración del token, se busca al usuario en la base " +
+        "y se comprueba que siga activo, y por último se compara su rol con los roles que acepta el método. " +
         "Si falla la identidad responde 401; si falla el rol, 403.",
-        "<b>El rol no viaja en el token.</b> Se lee de la base en cada petición, así que desactivar a un usuario "
+        "<b>El rol no viaja en el token.</b> Se lee de la base en cada petición, así que desactivar a un usuario " +
         "o cambiar su rol tiene efecto inmediato, aunque su token siga vigente.",
         "<b>Declarado en el código, no en cada función:</b> los routers de " + C("/users") + ", "
-        + C("/audit") + ", " + C("/sources") + " e " + C("/ips") + " exigen el rol a nivel de router, de modo "
-        "que un método nuevo en ellos queda protegido por defecto. En " + C("/exclusions") + " cada método "
+        + C("/audit") + ", " + C("/sources") + " e " + C("/ips") + " exigen el rol a nivel de router, de modo " +
+        "que un método nuevo en ellos queda protegido por defecto. En " + C("/exclusions") + " cada método " +
         "declara el suyo, porque mezcla lectura (reader) y escritura (admin).",
-        "<b>Todo queda auditado:</b> los accesos permitidos y los rechazados (401, 403 y 429) se registran con "
+        "<b>Todo queda auditado:</b> los accesos permitidos y los rechazados (401, 403 y 429) se registran con " +
         "usuario, ruta, código e IP de origen.",
     ])
     h.append(p("8.4 Gestión de usuarios", "h2"))
@@ -831,7 +831,7 @@ class Documento(SimpleDocTemplate):
             return
         nivel = 0 if nombre == "h1" else 1
         texto = flowable.getPlainText()
-        clave = "s" + hashlib.md5(texto.encode()).hexdigest()[:10]
+        clave = "s" + hashlib.sha256(texto.encode()).hexdigest()[:12]
         self.canv.bookmarkPage(clave)
         self.canv.addOutlineEntry(texto, clave, level=nivel, closed=nivel == 0)
         self.notify("TOCEntry", (nivel, texto, self.page, clave))
