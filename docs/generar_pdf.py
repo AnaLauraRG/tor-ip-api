@@ -9,6 +9,8 @@ Para actualizar el PDF después de tomar capturas, basta con volver a ejecutar:
 Requiere reportlab y Pillow (en Kali: sudo apt install python3-reportlab python3-pil).
 """
 
+import hashlib
+import re
 from datetime import date
 from pathlib import Path
 
@@ -28,6 +30,7 @@ from reportlab.platypus import (
     Table,
     TableStyle,
 )
+from reportlab.platypus.tableofcontents import TableOfContents
 
 DOCS = Path(__file__).resolve().parent
 CAPTURAS = DOCS / "capturas"
@@ -57,6 +60,16 @@ S = {
     "h2": ParagraphStyle("h2", parent=base["Heading2"], fontName="Helvetica-Bold",
                          fontSize=13, leading=17, textColor=ACENTO, spaceBefore=12, spaceAfter=6,
                          keepWithNext=True),
+    "h3": ParagraphStyle("h3", parent=base["Heading3"], fontName="Helvetica-Bold",
+                         fontSize=11.5, leading=15, textColor=GRIS_TEXTO, spaceBefore=8, spaceAfter=4,
+                         keepWithNext=True),
+    "indice": ParagraphStyle("indice", parent=base["Heading1"], fontName="Helvetica-Bold",
+                             fontSize=17, leading=22, textColor=ACENTO, spaceAfter=6),
+    "toc0": ParagraphStyle("toc0", parent=base["Normal"], fontName="Helvetica-Bold",
+                           fontSize=10.5, leading=13, leftIndent=0, firstLineIndent=0, spaceBefore=4,
+                           textColor=ACENTO),
+    "toc1": ParagraphStyle("toc1", parent=base["Normal"], fontName="Helvetica",
+                           fontSize=9.5, leading=12, leftIndent=16, firstLineIndent=0),
     "body": ParagraphStyle("body", parent=base["Normal"], fontName="Helvetica",
                            fontSize=11, leading=15.5, spaceAfter=7),
     "bullet": ParagraphStyle("bullet", parent=base["Normal"], fontName="Helvetica",
@@ -66,7 +79,7 @@ S = {
     "celda_b": ParagraphStyle("celda_b", parent=base["Normal"], fontName="Helvetica-Bold",
                               fontSize=9.5, leading=12.5, textColor=colors.white),
     "code": ParagraphStyle("code", parent=base["Code"], fontName="Courier",
-                           fontSize=9, leading=12),
+                           fontSize=8.5, leading=11.5, leftIndent=0),
     "cap_titulo": ParagraphStyle("cap_titulo", parent=base["Normal"], fontName="Helvetica-Bold",
                                  fontSize=10.5, leading=14, textColor=colors.HexColor("#7A5200")),
     "cap": ParagraphStyle("cap", parent=base["Normal"], fontName="Helvetica",
@@ -86,7 +99,7 @@ def vinetas(items):
 
 
 def codigo(texto):
-    pre = Preformatted(texto.strip("\n"), S["code"])
+    pre = Preformatted(texto.strip("\n"), S["code"], maxLineLength=86, newLineChars="      ")
     t = Table([[pre]], colWidths=[ANCHO_UTIL])
     t.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), GRIS_FONDO),
@@ -224,18 +237,30 @@ def descripcion():
 
 def arquitectura():
     h = [p("2. Arquitectura", "h1")]
+    h.append(p("La aplicación corre en dos contenedores dentro de una red interna de Docker Compose. "
+               "El diagrama sigue el camino de una petición de arriba hacia abajo y, a la derecha, "
+               "la descarga de las fuentes."))
+    h += diagrama(DOCS / "diagramas" / "arquitectura.png",
+                  "Arquitectura de Tor IP API con Docker Compose.", alto=6.7 * inch)
+    h.append(PageBreak())
     h += tabla([
         ["Componente", "Tecnología", "Función"],
-        ["API", "Python 3.13, FastAPI", "Expone los endpoints, valida datos, autentica y audita."],
-        ["Planificador de ingesta", "APScheduler", "Descarga las fuentes respetando el intervalo de cada una."],
-        ["Base de datos", "PostgreSQL 16", "Guarda IPs de Tor, exclusiones, usuarios, auditoría y estado de las fuentes."],
-        ["Contenedores", "Docker Compose", "Levanta la API y la base de datos en una red interna."],
-    ], [0.24, 0.24, 0.52])
-    h = [KeepTogether(h)]
-    h.append(p("Flujo de una petición: el cliente envía la petición con su token; la API verifica el "
-               "token y el rol del usuario, ejecuta la consulta en PostgreSQL, responde en JSON y "
-               "registra la petición en la auditoría. Las peticiones sin token o sin permiso se "
-               "rechazan con 401 o 403 y también quedan registradas."))
+        ["Middleware HTTP", "FastAPI", "Registra cada petición en la auditoría y agrega cabeceras de seguridad."],
+        ["Endpoints", "FastAPI, Pydantic", "Validan los datos y exigen el rol que corresponde a cada ruta."],
+        ["Seguridad", "bcrypt, PyJWT", "Verifica contraseñas y tokens; lee el rol y el estado del usuario en la base."],
+        ["Planificador de ingesta", "APScheduler", "Cada 5 minutos revisa qué fuentes toca descargar."],
+        ["Servicio de ingesta", "httpx", "Descarga las fuentes respetando su intervalo, valida las IPs y actualiza la base."],
+        ["Base de datos", "PostgreSQL 16", "IPs de Tor, exclusiones, usuarios, auditoría y estado de las fuentes."],
+        ["Contenedores", "Docker Compose", "API y base en una red interna; solo el puerto 8000 queda publicado."],
+    ], [0.24, 0.2, 0.56])
+    h.append(p("<b>Dos caminos independientes.</b> Los clientes leen de PostgreSQL a través de la API, y la "
+               "ingesta escribe en PostgreSQL desde las fuentes. Solo se encuentran en la base de datos: "
+               "una petición nunca espera a que se descargue una fuente y dan.me.uk nunca se consulta "
+               "más de lo que permite."))
+    h.append(p("<b>Flujo de una petición.</b> El middleware la registra; el endpoint pide al módulo de "
+               "seguridad que valide el token y el rol; si pasa, consulta PostgreSQL y responde en JSON. "
+               "Las peticiones sin token o sin permiso se rechazan con 401 o 403 y también quedan en la "
+               "auditoría."))
     return h
 
 
@@ -264,15 +289,23 @@ def requisitos_y_config():
     return h
 
 
-def ejecucion_docker():
-    h = [p("5. Ejecución con Docker", "h1")]
-    h.append(p("Desde la carpeta del proyecto, con el archivo <font face='Courier'>.env</font> ya configurado:"))
+C = "<font face='Courier'>{}</font>".format
+
+
+def ejecucion():
+    h = [p("5. Ejecución", "h1")]
+    h.append(p("La aplicación se puede ejecutar de dos formas: con Docker Compose, que levanta la API y "
+               "PostgreSQL igual que en producción, o directamente desde el repositorio con Python, útil "
+               "para desarrollo. Ambas leen la configuración del archivo " + C(".env") + "."))
+
+    h.append(p("5.1 Con Docker", "h2"))
+    h.append(p("Desde la carpeta del proyecto, con el archivo " + C(".env") + " ya configurado:"))
     h += codigo("docker compose up --build")
     h.append(p("Compose construye la imagen de la API, levanta PostgreSQL, espera a que la base esté "
-               "lista y arranca la API en <font face='Courier'>http://localhost:8000</font>. Al iniciar se "
-               "crea el administrador y corre el primer ciclo de descarga de las fuentes."))
-    h.append(p("Si se usa Podman en lugar de Docker, antes hay que activar su socket:"))
-    h += codigo("systemctl --user enable --now podman.socket")
+               "lista y arranca la API en " + C("http://localhost:8000") + ". Al iniciar se "
+               "crea el administrador y corre el primer ciclo de descarga de las fuentes. "
+               "Con Podman en lugar de Docker, antes hay que activar su socket con "
+               + C("systemctl --user enable --now podman.socket") + "."))
     h.append(p("Para comprobar que todo está funcionando:"))
     h += codigo("docker compose ps\ncurl http://localhost:8000/health")
     h += captura("00a-docker-compose-up.png", "Arranque con Docker Compose",
@@ -285,84 +318,249 @@ def ejecucion_docker():
                  "Captura de la terminal con ambos comandos.",
                  "los contenedores <i>db</i> y <i>api</i> en estado <i>Up</i> (healthy), y el JSON de /health "
                  "con las tres fuentes en <i>\"last_status\": \"ok\"</i>.")
-    return h
 
-
-def ejecucion_local():
-    h = [p("6. Ejecución local (sin Docker)", "h1")]
-    h.append(p("Útil para desarrollo. Sin la variable <font face='Courier'>DATABASE_URL</font>, la API usa un "
-               "archivo SQLite local (<font face='Courier'>tor.db</font>)."))
+    h.append(p("5.2 Desde el repositorio, sin Docker", "h2"))
+    h.append(p("Con Python 3.13, desde la carpeta del repositorio. Sin la variable " + C("DATABASE_URL")
+               + " la API usa un archivo SQLite local (" + C("tor.db") + "); el puerto 8001 evita chocar "
+               "con la versión en Docker si está corriendo."))
     h += codigo(
-        "python3 -m venv .venv\n"
-        "source .venv/bin/activate\n"
+        "python3 -m venv .venv && source .venv/bin/activate\n"
         "pip install -r requirements-dev.txt\n"
-        "cp .env.example .env          # completar al menos JWT_SECRET y ADMIN_PASSWORD\n"
-        "uvicorn app.main:app --reload --port 8001")
-    h.append(p("Se usa el puerto 8001 para no chocar con la versión en Docker, si está corriendo. "
-               "Para usar PostgreSQL en lugar de SQLite:"))
-    h += codigo("export DATABASE_URL=postgresql+psycopg://usuario:clave@localhost:5432/tor")
-    h.append(p("Pruebas automáticas (68 pruebas; simulan las fuentes, no requieren internet):"))
-    h += codigo("pytest")
+        "cp .env.example .env     # completar al menos JWT_SECRET y ADMIN_PASSWORD\n"
+        "uvicorn app.main:app --reload --port 8001\n"
+        "pytest                   # pruebas automáticas; simulan las fuentes, sin internet")
+    h.append(p("Para usar PostgreSQL en lugar de SQLite: "
+               + C("export DATABASE_URL=postgresql+psycopg://usuario:clave@localhost:5432/tor") + "."))
     return h
 
 
-def acceso():
-    h = [p("7. Autenticación y roles", "h1")]
-    h.append(p("Todos los endpoints, excepto <font face='Courier'>/auth/login</font> y "
-               "<font face='Courier'>/health</font>, requieren un token. El token se obtiene con usuario y "
-               "contraseña y se envía en la cabecera <font face='Courier'>Authorization: Bearer &lt;token&gt;</font>. "
-               "Expira a los 30 minutos."))
+def autenticacion():
+    h = [p("6. Autenticación", "h1")]
+    h.append(p("Todos los métodos, excepto " + C("POST /auth/login") + " y " + C("GET /health") + ", "
+               "requieren un token. El token se obtiene con usuario y contraseña y se envía en la cabecera "
+               + C("Authorization: Bearer &lt;token&gt;") + "."))
     h += codigo(
         'curl -X POST http://localhost:8000/auth/login \\\n'
         '     -d "username=admin&password=TU_CLAVE"')
-    h += tabla([
-        ["Acción", "reader", "admin"],
-        ["Consultar IPs y exclusiones", "Sí", "Sí"],
-        ["Crear y borrar exclusiones", "No (403)", "Sí"],
-        ["Actualizar las fuentes manualmente", "No (403)", "Sí"],
-        ["Crear y listar usuarios", "No (403)", "Sí"],
-        ["Consultar la auditoría", "No (403)", "Sí"],
-    ], [0.56, 0.22, 0.22])
-    h.append(p("El administrador inicial se crea desde el <font face='Courier'>.env</font>; los demás usuarios "
-               "los crea un administrador con <font face='Courier'>POST /users</font>. El rol se consulta en la "
-               "base de datos en cada petición, por lo que desactivar a un usuario o cambiar su rol tiene "
-               "efecto inmediato aunque su token siga vigente."))
+    h += vinetas([
+        "El token es un JWT firmado con HS256 que expira a los 30 minutos. Solo contiene el nombre de "
+        "usuario; el rol se consulta en la base en cada petición.",
+        "Las contraseñas se guardan con bcrypt. Si el usuario no existe o la contraseña es incorrecta, la "
+        "respuesta y el tiempo de respuesta son los mismos, para no revelar qué usuarios existen.",
+        "Tras 5 intentos fallidos en 15 minutos desde la misma IP, el login responde 429 hasta que pase la ventana.",
+        "En Swagger UI (" + C("http://localhost:8000/docs") + ") se usa el botón <b>Authorize</b>; "
+        "desde ese momento todas las peticiones llevan el token.",
+    ])
     return h
 
 
-def endpoints():
-    h = [p("8. Referencia de endpoints", "h1")]
+def _metodo(metodo, ruta, quien, que_hace, entrada, respuestas):
+    filas = [
+        [Paragraph(f"<b>{metodo}</b>  <font face='Courier'>{ruta}</font>", S["celda_b"]), ""],
+        [Paragraph("<b>Qué hace</b>", S["celda"]), Paragraph(que_hace, S["celda"])],
+        [Paragraph("<b>Quién puede ejecutarlo</b>", S["celda"]), Paragraph(quien, S["celda"])],
+        [Paragraph("<b>Entrada</b>", S["celda"]), Paragraph(entrada, S["celda"])],
+        [Paragraph("<b>Respuestas</b>", S["celda"]), Paragraph(respuestas, S["celda"])],
+    ]
+    t = Table(filas, colWidths=[ANCHO_UTIL * 0.24, ANCHO_UTIL * 0.76])
+    t.setStyle(TableStyle([
+        ("SPAN", (0, 0), (-1, 0)),
+        ("BACKGROUND", (0, 0), (-1, 0), ACENTO),
+        ("BACKGROUND", (0, 1), (0, -1), GRIS_FONDO),
+        ("GRID", (0, 0), (-1, -1), 0.5, GRIS_BORDE),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6), ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    return [KeepTogether([t, Spacer(1, 10)])]
+
+
+def unir_titulos(h):
+    """Pega cada subtítulo h3 al bloque que le sigue, para que nunca quede solo al pie de una página."""
+    salida = []
+    for elem in h:
+        if (isinstance(elem, KeepTogether) and salida and isinstance(salida[-1], Paragraph)
+                and salida[-1].style.name == "h3"):
+            elem = KeepTogether([salida.pop()] + list(elem._content))
+        salida.append(elem)
+    return salida
+
+
+def metodos():
+    publico = "<b>Cualquiera</b>, sin token."
+    lectura = "<b>reader</b> y <b>admin</b>. Sin token: 401."
+    admin = "<b>Solo admin</b>. Un reader recibe 403; sin token: 401."
+    h = [p("7. Métodos de la API", "h1")]
+    h.append(p("La API tiene 11 métodos. Los tres que pide el reto son " + C("GET /ips") + ", "
+               + C("POST /exclusions") + " y " + C("GET /ips/filtered") + "; los demás son extras. "
+               "La tabla resume qué hace cada uno y quién lo puede ejecutar; después se detalla cada método."))
+    h.append(p("7.1 Resumen", "h2"))
     h += tabla([
-        ["Método", "Ruta", "Acceso", "Respuestas"],
-        ["POST", "/auth/login", "Público", "200, 401, 429"],
-        ["GET", "/ips", "reader, admin", "200, 401"],
-        ["GET", "/ips/filtered", "reader, admin", "200, 401"],
-        ["GET", "/exclusions", "reader, admin", "200, 401"],
-        ["POST", "/exclusions", "admin", "201, 401, 403, 409, 422"],
-        ["DELETE", "/exclusions/{ip}", "admin", "204, 401, 403, 404, 422"],
-        ["POST", "/sources/refresh", "admin", "200, 401, 403, 409"],
-        ["GET", "/users", "admin", "200, 401, 403"],
-        ["POST", "/users", "admin", "201, 401, 403, 409, 422"],
-        ["GET", "/audit", "admin", "200, 401, 403, 422"],
-        ["GET", "/health", "Público", "200, 503"],
-    ], [0.13, 0.27, 0.25, 0.35])
+        ["Método", "Ruta", "Qué hace", "Quién puede"],
+        ["POST", "/auth/login", "Entrega un token a cambio de usuario y contraseña.", "Cualquiera"],
+        ["GET", "/ips", "Lista todas las IPs de Tor de las fuentes. <b>(Reto)</b>", "reader, admin"],
+        ["GET", "/ips/filtered", "Lista las IPs de Tor menos las excluidas. <b>(Reto)</b>", "reader, admin"],
+        ["GET", "/exclusions", "Lista las IPs excluidas con su motivo y fecha.", "reader, admin"],
+        ["POST", "/exclusions", "Agrega una IP a las exclusiones. <b>(Reto)</b>", "admin"],
+        ["DELETE", "/exclusions/{ip}", "Quita una IP de las exclusiones.", "admin"],
+        ["POST", "/sources/refresh", "Descarga las fuentes sin esperar su intervalo.", "admin"],
+        ["GET", "/users", "Lista los usuarios, su rol y su estado.", "admin"],
+        ["POST", "/users", "Crea un usuario reader o admin.", "admin"],
+        ["GET", "/audit", "Consulta el registro de auditoría.", "admin"],
+        ["GET", "/health", "Estado del servicio y de cada fuente.", "Cualquiera"],
+    ], [0.11, 0.21, 0.5, 0.18])
+
+    h.append(p("7.2 Detalle por método", "h2"))
+    h.append(p("Autenticación", "h3"))
+    h += _metodo("POST", "/auth/login", publico,
+                 "Verifica usuario y contraseña y devuelve un token JWT válido por 30 minutos.",
+                 "Formulario " + C("application/x-www-form-urlencoded") + " con " + C("username") + " y "
+                 + C("password") + ".",
+                 "<b>200</b> con " + C("access_token") + ", " + C("token_type") + " y " + C("expires_in")
+                 + ". <b>401</b> si las credenciales son incorrectas o el usuario está desactivado. "
+                 "<b>429</b> tras 5 intentos fallidos en 15 minutos, con la cabecera " + C("Retry-After") + ".")
+    h.append(p("IPs de Tor", "h3"))
+    h += _metodo("GET", "/ips", lectura,
+                 "Devuelve todas las IPs de Tor obtenidas de las tres fuentes, sin duplicados y ordenadas. "
+                 "Lee de la base; nunca consulta las fuentes en el momento.",
+                 "Ninguna.",
+                 "<b>200</b> con " + C("count") + " (total) e " + C("ips") + " (lista). <b>401</b> sin token válido.")
+    h += _metodo("GET", "/ips/filtered", lectura,
+                 "Devuelve las mismas IPs que " + C("/ips") + " exceptuando las que están en la base de "
+                 "exclusiones. Es el listado que consumiría un firewall o un WAF.",
+                 "Ninguna.",
+                 "<b>200</b> con " + C("count") + " e " + C("ips") + ". <b>401</b> sin token válido.")
+    h.append(p("Exclusiones", "h3"))
+    h += _metodo("GET", "/exclusions", lectura,
+                 "Lista las IPs excluidas con su motivo y la fecha en que se agregaron, de la más reciente a la más antigua.",
+                 "Ninguna.",
+                 "<b>200</b> con la lista. <b>401</b> sin token válido.")
+    h += _metodo("POST", "/exclusions", admin,
+                 "Agrega una IP a la base de exclusiones para que deje de aparecer en " + C("/ips/filtered")
+                 + ". La IP se valida y se guarda en forma canónica (IPv4 o IPv6).",
+                 "JSON con " + C("ip") + " (obligatoria) y " + C("reason") + " (opcional, hasta 255 caracteres).",
+                 "<b>201</b> con la IP, el motivo y la fecha. <b>409</b> si ya estaba excluida. "
+                 "<b>422</b> si no es una IP válida. <b>401</b> / <b>403</b> según el acceso.")
+    h += _metodo("DELETE", "/exclusions/{ip}", admin,
+                 "Quita una IP de las exclusiones; vuelve a aparecer en " + C("/ips/filtered")
+                 + " si alguna fuente la reporta.",
+                 "La IP en la ruta.",
+                 "<b>204</b> sin contenido. <b>404</b> si no estaba excluida. <b>422</b> si no es una IP "
+                 "válida. <b>401</b> / <b>403</b> según el acceso.")
+    h.append(p("Fuentes", "h3"))
+    h += _metodo("POST", "/sources/refresh", admin,
+                 "Descarga las fuentes en ese momento, sin esperar su intervalo normal. Aun así respeta el "
+                 "mínimo de cada fuente: dan.me.uk nunca se consulta más de una vez cada 30 minutos y aparece "
+                 "como " + C("skipped") + " si es muy pronto.",
+                 "Ninguna.",
+                 "<b>200</b> con el resultado por fuente y su estado. <b>409</b> si ya hay una actualización "
+                 "en curso. <b>401</b> / <b>403</b> según el acceso.")
+    h.append(p("Usuarios", "h3"))
+    h += _metodo("GET", "/users", admin,
+                 "Lista los usuarios con su rol, si están activos y su fecha de creación. Nunca devuelve "
+                 "contraseñas ni hashes.",
+                 "Ninguna.",
+                 "<b>200</b> con la lista. <b>401</b> / <b>403</b> según el acceso.")
+    h += _metodo("POST", "/users", admin,
+                 "Crea un usuario. Si no se indica el rol, se crea como " + C("reader") + ".",
+                 "JSON con " + C("username") + " (3 a 50 caracteres: letras, números, " + C("_ . -")
+                 + "), " + C("password") + " (12 caracteres o más) y " + C("role") + " (" + C("reader")
+                 + " o " + C("admin") + ", opcional).",
+                 "<b>201</b> con el usuario creado, sin la contraseña. <b>409</b> si ya existe. "
+                 "<b>422</b> si los datos no cumplen las reglas. <b>401</b> / <b>403</b> según el acceso.")
+    h.append(p("Auditoría y estado", "h3"))
+    h += _metodo("GET", "/audit", admin,
+                 "Consulta el registro de auditoría: cada petición con fecha, usuario, método, ruta, código "
+                 "de respuesta, IP de origen, user agent y duración, de la más reciente a la más antigua.",
+                 "Parámetros opcionales " + C("limit") + " (1 a 500, por defecto 100), " + C("offset")
+                 + " y " + C("username") + " para filtrar por usuario.",
+                 "<b>200</b> con la lista. <b>422</b> si los parámetros no son válidos. "
+                 "<b>401</b> / <b>403</b> según el acceso.")
+    h += _metodo("GET", "/health", publico,
+                 "Indica si el servicio y la base funcionan y muestra, por fuente, su último intento, "
+                 "su último éxito, el último error y cuántas IPs aporta. Lo usan Docker y el balanceador "
+                 "para saber si el contenedor está sano.",
+                 "Ninguna.",
+                 "<b>200</b> con el estado. <b>503</b> si la base de datos no está disponible.")
+    h.append(p("Códigos de respuesta", "h3"))
     h += tabla([
         ["Código", "Significado"],
         ["200 / 201 / 204", "Éxito: consulta, creación o eliminación."],
-        ["401", "Sin token, token inválido o expirado, o credenciales incorrectas."],
+        ["401", "Sin token, token inválido o expirado, usuario desactivado o credenciales incorrectas."],
         ["403", "El rol del usuario no permite la operación."],
         ["404", "La exclusión a eliminar no existe."],
         ["409", "La IP ya está excluida, el usuario ya existe o hay una actualización en curso."],
         ["422", "Datos inválidos, por ejemplo una IP mal formada."],
         ["429", "Demasiados intentos de login fallidos; la cabecera Retry-After indica cuándo reintentar."],
+        ["503", "La base de datos no está disponible (solo /health)."],
     ], [0.22, 0.78])
-    h.append(p("La documentación interactiva de todos los endpoints está disponible en "
-               "<font face='Courier'>http://localhost:8000/docs</font> (Swagger UI)."))
+    h.append(p("La documentación interactiva de todos los métodos está en " + C("http://localhost:8000/docs")
+               + " (Swagger UI)."))
     h += captura("00d-swagger.png", "Documentación interactiva (Swagger UI)",
                  "<font face='Courier'>http://localhost:8000/docs</font> en el navegador",
                  "Abrir la página sin desplegar ningún endpoint.",
                  "la lista completa de endpoints agrupados por sección (auth, ips, exclusions, sources, "
                  "users, audit, health) y el botón <i>Authorize</i>.")
+    return unir_titulos(h)
+
+
+def permisos():
+    si, no403, no401 = "Sí", "No (403)", "No (401)"
+    h = [p("8. Esquema de permisos", "h1")]
+    h.append(p("El acceso se controla con roles (RBAC). Cada usuario tiene exactamente un rol, y cada método "
+               "declara qué roles lo pueden ejecutar. Lo que no está permitido de forma explícita se rechaza."))
+    h.append(p("8.1 Roles", "h2"))
+    h += tabla([
+        ["Rol", "Para quién", "Qué puede hacer"],
+        ["Público (sin token)", "Cualquier cliente", "Iniciar sesión y consultar el estado del servicio."],
+        ["reader", "Analistas y sistemas que consumen la lista (firewall, WAF)",
+         "Consultar las IPs de Tor, el listado filtrado y las exclusiones. No modifica nada."],
+        ["admin", "Responsables de la herramienta",
+         "Todo lo del reader, más gestionar exclusiones, usuarios, actualizar las fuentes y ver la auditoría."],
+    ], [0.2, 0.33, 0.47])
+    h.append(p("8.2 Matriz de permisos", "h2"))
+    h += tabla([
+        ["Método", "Sin token", "reader", "admin"],
+        ["POST /auth/login", si, si, si],
+        ["GET /health", si, si, si],
+        ["GET /ips", no401, si, si],
+        ["GET /ips/filtered", no401, si, si],
+        ["GET /exclusions", no401, si, si],
+        ["POST /exclusions", no401, no403, si],
+        ["DELETE /exclusions/{ip}", no401, no403, si],
+        ["POST /sources/refresh", no401, no403, si],
+        ["GET /users", no401, no403, si],
+        ["POST /users", no401, no403, si],
+        ["GET /audit", no401, no403, si],
+    ], [0.4, 0.2, 0.2, 0.2])
+    h.append(p("Las capturas 11 a 17 de la sección 9 demuestran esta matriz: peticiones sin token y con token "
+               "manipulado (401), el reader consultando (200) y el reader intentando excluir una IP y ver la "
+               "auditoría (403)."))
+    h.append(p("8.3 Cómo se aplica", "h2"))
+    h += vinetas([
+        "<b>En cada petición:</b> se valida la firma y la expiración del token, se busca al usuario en la base "
+        "y se comprueba que siga activo, y por último se compara su rol con los roles que acepta el método. "
+        "Si falla la identidad responde 401; si falla el rol, 403.",
+        "<b>El rol no viaja en el token.</b> Se lee de la base en cada petición, así que desactivar a un usuario "
+        "o cambiar su rol tiene efecto inmediato, aunque su token siga vigente.",
+        "<b>Declarado en el código, no en cada función:</b> los routers de " + C("/users") + ", "
+        + C("/audit") + ", " + C("/sources") + " e " + C("/ips") + " exigen el rol a nivel de router, de modo "
+        "que un método nuevo en ellos queda protegido por defecto. En " + C("/exclusions") + " cada método "
+        "declara el suyo, porque mezcla lectura (reader) y escritura (admin).",
+        "<b>Todo queda auditado:</b> los accesos permitidos y los rechazados (401, 403 y 429) se registran con "
+        "usuario, ruta, código e IP de origen.",
+    ])
+    h.append(p("8.4 Gestión de usuarios", "h2"))
+    h += vinetas([
+        "<b>Administrador inicial:</b> se crea en el primer arranque con " + C("ADMIN_USERNAME") + " y "
+        + C("ADMIN_PASSWORD") + " del " + C(".env") + ". Después, cambiar esos valores no lo modifica.",
+        "<b>Nuevos usuarios:</b> solo un admin los crea, con " + C("POST /users") + ". Por defecto son "
+        + C("reader") + ", siguiendo el principio de mínimo privilegio. No hay registro público.",
+        "<b>Contraseñas:</b> mínimo 12 caracteres, guardadas con bcrypt; ningún método las devuelve.",
+        "<b>Desactivar o cambiar el rol:</b> no hay un método para hacerlo; se hace en la base con "
+        + C("UPDATE users SET is_active = false WHERE username = '...'") + " (o cambiando " + C("role")
+        + "). El cambio aplica de inmediato. Agregar estos métodos sería una extensión natural.",
+    ])
     return h
 
 
@@ -470,119 +668,159 @@ def evidencias():
 
 
 def seguridad():
-    h = [p("10. Seguridad", "h1")]
-    h += vinetas([
-        "Contraseñas con hash bcrypt; nunca se guardan ni se registran en claro.",
-        "Tokens JWT firmados con HS256 y con expiración; se rechazan los tokens sin firma, alterados o expirados.",
-        "El login responde igual si el usuario no existe o si la contraseña es incorrecta.",
-        "Validación estricta de IPs (IPv4 e IPv6) y consultas parametrizadas: sin inyección SQL.",
-        "Cabeceras de seguridad en todas las respuestas y contenedor con usuario sin privilegios.",
-        "Secretos solo en variables de entorno; la API key se envía en una cabecera, nunca en la URL.",
-        "Análisis SAST con Bandit, Semgrep, pip-audit, Gitleaks y Trivy, ejecutados en cada push "
-        "con GitHub Actions. Resultado final: 0 vulnerabilidades.",
-    ])
-    h.append(Spacer(1, 4))
-    h.append(p("El detalle de cada análisis, sus hallazgos y las decisiones tomadas está en "
-               "<font face='Courier'>docs/sast-report.md</font>."))
+    h = desde_markdown(DOCS / "sast-report.md", 10)
+    h.insert(1, p("Esta sección reproduce el informe " + C("docs/sast-report.md") + " del repositorio. Los "
+                  "controles de autenticación y permisos de la aplicación están en las secciones 6 y 8, y los "
+                  "de la nube en la sección 11."))
     return h
 
 
-def diagrama(ruta, pie):
+def diagrama(ruta, pie, alto=6.4 * inch):
     img = Image(str(ruta))
-    escala = min(ANCHO_UTIL / img.imageWidth, (6.4 * inch) / img.imageHeight)
+    escala = min(ANCHO_UTIL / img.imageWidth, alto / img.imageHeight)
     img.drawWidth = img.imageWidth * escala
     img.drawHeight = img.imageHeight * escala
     img.hAlign = "CENTER"
     return [KeepTogether([img, Paragraph(pie, S["pie_img"])])]
 
 
-def nube():
-    h = [p("11. Despliegue en la nube (AWS)", "h1")]
-    h.append(p("Esta sección explica cómo se ejecutaría la solución en AWS. Es una propuesta de diseño: "
-               "la API no está desplegada en la nube. Se eligió AWS porque cubre con servicios "
-               "administrados todo lo que la aplicación usa en Docker Compose (contenedor, PostgreSQL, "
-               "secretos y logs) sin cambiar el código. El detalle completo está en "
-               "<font face='Courier'>docs/despliegue-nube.md</font>."))
-    h += diagrama(DOCS / "diagramas" / "aws-vertical.png", "Arquitectura de despliegue propuesta en AWS.")
-    h.append(p("Componentes", "h2"))
-    h += tabla([
-        ["Necesidad", "En Docker Compose", "En AWS"],
-        ["Imagen", "Se construye localmente", "Amazon ECR, con escaneo al subir y etiquetas inmutables"],
-        ["Contenedor", "Servicio api", "ECS sobre Fargate, en subredes privadas"],
-        ["Base de datos", "Contenedor postgres:16", "RDS for PostgreSQL 16, Multi-AZ, cifrada con KMS y TLS obligatorio"],
-        ["Secretos", "Archivo .env", "AWS Secrets Manager, inyectados en la tarea al arrancar"],
-        ["Entrada HTTP", "Puerto 8000", "Application Load Balancer con HTTPS (certificado de ACM)"],
-        ["Protección perimetral", "—", "AWS WAF: reglas administradas, límite de tasa en /auth/login y lista de IPs permitidas"],
-        ["Logs y auditoría", "Salida del contenedor y tabla audit_log", "CloudWatch Logs y alarmas; la tabla audit_log sigue en RDS"],
-        ["Salida a internet", "Red de Docker", "NAT Gateway, solo para descargar las fuentes"],
-    ], [0.22, 0.3, 0.48])
-    h.append(p("Red", "h2"))
-    h += vinetas([
-        "VPC con dos zonas de disponibilidad. En las subredes públicas solo están el balanceador y el NAT Gateway.",
-        "Las tareas de ECS y la base de datos están en subredes privadas, sin IP pública.",
-        "Grupos de seguridad encadenados: el balanceador acepta 443 desde internet (filtrado por WAF); "
-        "las tareas aceptan 8000 solo desde el balanceador; RDS acepta 5432 solo desde las tareas.",
-    ])
-    h.append(p("Dos servicios con la misma imagen", "h2"))
-    h.append(p("El planificador de ingesta corre dentro del proceso de la API y su bloqueo vive en memoria. "
-               "Con varias tareas, cada una descargaría las fuentes y dan.me.uk podría bloquear la IP de salida. "
-               "Por eso se crean dos servicios de ECS que solo se distinguen por una variable que la aplicación ya soporta:"))
-    h += tabla([
-        ["Servicio", "Tareas", "SCHEDULER_ ENABLED", "Balanceador", "Función"],
-        ["api", "2 o más, escalado por CPU", "false", "Sí", "Atiende las peticiones"],
-        ["ingesta", "Exactamente 1", "true", "No", "Descarga las fuentes y actualiza la base"],
-    ], [0.11, 0.22, 0.27, 0.15, 0.25])
-    h.append(p("Seguridad en la nube", "h2"))
-    h += vinetas([
-        "<b>Secretos:</b> JWT_SECRET, ADMIN_PASSWORD, DATABASE_URL y BIGDATACLOUD_API_KEY en Secrets Manager. "
-        "El rol de ejecución solo puede leer esos secretos y descargar la imagen; la aplicación no necesita "
-        "permisos de AWS.",
-        "<b>Límite de login:</b> el límite de la aplicación vive en memoria; con varias tareas lo reemplaza una "
-        "regla de límite de tasa de WAF sobre /auth/login.",
-        "<b>IP real del cliente:</b> con <font face='Courier'>FORWARDED_ALLOW_IPS=10.0.0.0/16</font>, Uvicorn toma "
-        "la IP que agrega el balanceador y la auditoría registra el origen real, sin que un cliente pueda "
-        "falsificarla con su propia cabecera X-Forwarded-For. No requiere cambios en el código.",
-        "<b>Contenedor:</b> usuario sin privilegios y sistema de archivos raíz en solo lectura.",
-        "<b>Alertas:</b> filtros de métricas en CloudWatch para picos de 401, 403 y 429, fuentes con error y "
-        "tareas caídas; CloudTrail registra los cambios de infraestructura.",
-    ])
-    h.append(p("Despliegue continuo", "h2"))
-    h += vinetas([
-        "El pipeline de GitHub Actions existente agrega un trabajo de despliegue en la rama main, que solo corre "
-        "si pasan las pruebas y los análisis de seguridad.",
-        "Se autentica en AWS con OIDC (sin claves guardadas en GitHub), construye la imagen, la escanea con Trivy, "
-        "la sube a ECR con el hash del commit y actualiza los dos servicios.",
-        "ECS hace un despliegue gradual y vuelve a la versión anterior si las tareas nuevas no pasan /health.",
-        "La infraestructura se describe como código (Terraform o AWS CDK) y se revisa en pull requests.",
-    ])
-    h.append(p("Primer despliegue", "h2"))
-    h += codigo(
-        "aws ecr create-repository --repository-name tor-ip-api \\\n"
-        "    --image-scanning-configuration scanOnPush=true \\\n"
-        "    --image-tag-mutability IMMUTABLE\n"
-        "TAG=$(git rev-parse --short HEAD)\n"
-        "docker build -t $REPO:$TAG . && docker push $REPO:$TAG\n"
-        "aws secretsmanager create-secret --name tor-ip-api/jwt-secret \\\n"
-        "    --secret-string \"$(openssl rand -base64 48)\"\n"
-        "aws ecs register-task-definition \\\n"
-        "    --cli-input-json file://task-api.json\n"
-        "aws ecs create-service --cluster tor-ip-api --service-name api \\\n"
-        "    --desired-count 2 --launch-type FARGATE ...")
-    h.append(p("Al arrancar por primera vez, la aplicación crea las tablas y el administrador inicial, igual que "
-               "en Docker Compose. Los mayores costos mensuales son el NAT Gateway, RDS Multi-AZ, el balanceador "
-               "y Fargate; se estiman con la AWS Pricing Calculator."))
-    h.append(p("Equivalentes en GCP y Azure", "h2"))
-    h += tabla([
-        ["Necesidad", "AWS", "GCP", "Azure"],
-        ["Imágenes", "ECR", "Artifact Registry", "Container Registry"],
-        ["Contenedores", "ECS Fargate", "Cloud Run", "Container Apps"],
-        ["PostgreSQL", "RDS", "Cloud SQL", "Database for PostgreSQL"],
-        ["Secretos", "Secrets Manager", "Secret Manager", "Key Vault"],
-        ["Balanceador", "ALB + ACM", "Cloud Load Balancing", "Application Gateway"],
-        ["WAF", "AWS WAF", "Cloud Armor", "Azure WAF"],
-        ["Logs y alertas", "CloudWatch", "Cloud Logging y Monitoring", "Azure Monitor"],
-    ], [0.19, 0.23, 0.29, 0.29])
+def _inline(texto):
+    """Markdown en línea (negrita, cursiva, código, enlaces) a las etiquetas de reportlab."""
+    texto = texto.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    codigos = []
+
+    def guardar(m):
+        codigos.append(m.group(1))
+        return f"\x00{len(codigos) - 1}\x00"
+
+    texto = re.sub(r"`([^`]+)`", guardar, texto)
+    texto = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"<link href='\2' color='#1F4E79'>\1</link>", texto)
+    texto = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", texto)
+    texto = re.sub(r"(?<![\w*])\*([^*]+)\*(?![\w*])", r"<i>\1</i>", texto)
+    return re.sub(r"\x00(\d+)\x00", lambda m: f"<font face='Courier'>{codigos[int(m.group(1))]}</font>", texto)
+
+
+def anchos_columnas(filas):
+    """Reparte el ancho: cada columna recibe al menos su palabra más larga y el resto
+    se reparte según cuánto texto tiene."""
+    def visible(celda):
+        return re.sub(r"<[^>]+>", "", celda).replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+
+    columnas = range(len(filas[0]))
+    # Una palabra muy larga (una versión, un hash) se parte; no debe acaparar la tabla.
+    minimo = [min(max(max((len(w) for w in visible(f[k]).split()), default=1) for f in filas) * 5.3 + 12, 105)
+              for k in columnas]
+    deseado = [max(min(len(visible(f[k])), 70) for f in filas) * 5.0 + 12 for k in columnas]
+    deseado = [max(d, m) for d, m in zip(deseado, minimo)]
+    if sum(deseado) <= ANCHO_UTIL:
+        return [d / sum(deseado) for d in deseado]
+    extra = ANCHO_UTIL - sum(minimo)
+    if extra <= 0:
+        return [m / sum(minimo) for m in minimo]
+    holgura = [d - m for d, m in zip(deseado, minimo)]
+    return [(m + extra * hgl / sum(holgura)) / ANCHO_UTIL for m, hgl in zip(minimo, holgura)]
+
+
+def desde_markdown(ruta, numero):
+    """Convierte docs/despliegue-nube.md en elementos del PDF.
+
+    Así el documento del repositorio y la sección del PDF no se desincronizan.
+    Las secciones "## N. Título" pasan a "numero.N Título".
+    """
+    h = []
+    lineas = _renumerar(ruta.read_text(encoding="utf-8"), numero).splitlines()
+    i = 0
+    while i < len(lineas):
+        linea = lineas[i]
+        if linea.startswith("# "):
+            h.append(p(f"{numero}. {_inline(linea[2:])}", "h1"))
+        elif linea.startswith("## "):
+            titulo = re.sub(r"^(\d+)\.\s*", rf"{numero}.\1 ", linea[3:])
+            h.append(p(_inline(titulo), "h2"))
+        elif linea.startswith("### "):
+            h.append(p(_inline(linea[4:]), "h3"))
+        elif linea.startswith("```"):
+            bloque = []
+            i += 1
+            while not lineas[i].startswith("```"):
+                bloque.append(lineas[i])
+                i += 1
+            h += codigo("\n".join(bloque))
+        elif linea.startswith("!["):
+            m = re.match(r"!\[([^\]]*)\]\(([^)]+)\)", linea)
+            ruta_img = DOCS / m.group(2)
+            vertical = ruta_img.with_name(ruta_img.stem + "-vertical.png")
+            figura = diagrama(vertical if vertical.exists() else ruta_img, m.group(1) + ".", alto=6.2 * inch)
+            if h and isinstance(h[-1], Paragraph) and h[-1].style.name in ("h2", "h3"):
+                figura = [KeepTogether([h.pop()] + figura)]
+            h += figura
+        elif linea.startswith("|"):
+            filas = []
+            while i < len(lineas) and lineas[i].startswith("|"):
+                celdas = [c.strip() for c in lineas[i].strip().strip("|").split("|")]
+                if not all(re.fullmatch(r":?-+:?", c) for c in celdas):
+                    filas.append([_inline(c) for c in celdas])
+                i += 1
+            h += tabla(filas, anchos_columnas(filas))
+            continue
+        elif re.match(r"^\s*(-|\d+\.)\s", linea):
+            items = []
+            while i < len(lineas) and re.match(r"^\s*(-|\d+\.)\s", lineas[i]):
+                m = re.match(r"^\s*(-|\d+\.)\s+(.*)", lineas[i])
+                marca = "•" if m.group(1) == "-" else m.group(1)
+                items.append(Paragraph(_inline(m.group(2)), S["bullet"], bulletText=marca))
+                i += 1
+            h += items + [Spacer(1, 4)]
+            continue
+        elif linea.strip():
+            h.append(p(_inline(linea)))
+        i += 1
     return h
+
+
+def _renumerar(texto, numero):
+    """Las referencias internas del Markdown ("sección 3") pasan a la numeración del PDF ("sección 10.3")."""
+    return re.sub(r"\b(secci[oó]n) (\d+)\b", rf"\1 {numero}.\2", texto)
+
+
+def nube():
+    h = desde_markdown(DOCS / "despliegue-nube.md", 11)
+    h.insert(1, p("Esta sección reproduce <font face='Courier'>docs/despliegue-nube.md</font> del repositorio."))
+    return h
+
+
+def indice():
+    toc = TableOfContents()
+    toc.levelStyles = [S["toc0"], S["toc1"]]
+    toc.dotsMinLevel = 0
+    toc.tableStyle = TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 1), ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+    ])
+    return [Paragraph("Índice", S["indice"]),
+            p("Haz clic en un título para ir a su sección; el enlace <i>Índice</i> del pie de página regresa aquí."),
+            toc, PageBreak()]
+
+
+class Documento(SimpleDocTemplate):
+    """Agrega cada título al índice clicable y a los marcadores del PDF."""
+
+    def afterFlowable(self, flowable):
+        if not isinstance(flowable, Paragraph):
+            return
+        nombre = flowable.style.name
+        if nombre == "indice":
+            self.canv.bookmarkPage("indice")
+            return
+        if nombre not in ("h1", "h2"):
+            return
+        nivel = 0 if nombre == "h1" else 1
+        texto = flowable.getPlainText()
+        clave = "s" + hashlib.md5(texto.encode()).hexdigest()[:10]
+        self.canv.bookmarkPage(clave)
+        self.canv.addOutlineEntry(texto, clave, level=nivel, closed=nivel == 0)
+        self.notify("TOCEntry", (nivel, texto, self.page, clave))
 
 
 def numerar(canvas, doc):
@@ -592,12 +830,19 @@ def numerar(canvas, doc):
     canvas.setFont("Helvetica", 8.5)
     canvas.setFillColor(GRIS_TEXTO)
     canvas.drawString(inch, 0.6 * inch, "Tor IP API · Documentación técnica")
+    centro = letter[0] / 2
+    canvas.setFillColor(ACENTO)
+    canvas.drawCentredString(centro, 0.6 * inch, "Índice")
+    ancho = canvas.stringWidth("Índice", "Helvetica", 8.5)
+    canvas.linkRect("", "indice", (centro - ancho / 2 - 2, 0.55 * inch, centro + ancho / 2 + 2, 0.75 * inch),
+                    relative=0, thickness=0)
+    canvas.setFillColor(GRIS_TEXTO)
     canvas.drawRightString(letter[0] - inch, 0.6 * inch, f"Página {doc.page}")
     canvas.restoreState()
 
 
 def main():
-    doc = SimpleDocTemplate(
+    doc = Documento(
         str(SALIDA), pagesize=letter,
         leftMargin=inch, rightMargin=inch, topMargin=0.9 * inch, bottomMargin=0.9 * inch,
         title="Tor IP API · Documentación técnica", author="AnaLauraRG",
@@ -605,23 +850,27 @@ def main():
     )
     historia = []
     historia += portada()
+    historia += indice()
     historia += descripcion()
+    historia.append(PageBreak())
     historia += arquitectura()
     historia.append(PageBreak())
     historia += requisitos_y_config()
     historia.append(PageBreak())
-    historia += ejecucion_docker()
-    historia += ejecucion_local()
+    historia += ejecucion()
     historia.append(PageBreak())
-    historia += acceso()
-    historia += endpoints()
+    historia += autenticacion()
+    historia.append(PageBreak())
+    historia += metodos()
+    historia.append(PageBreak())
+    historia += permisos()
     historia.append(PageBreak())
     historia += evidencias()
     historia.append(PageBreak())
     historia += seguridad()
     historia.append(PageBreak())
     historia += nube()
-    doc.build(historia, onFirstPage=numerar, onLaterPages=numerar)
+    doc.multiBuild(historia, onFirstPage=numerar, onLaterPages=numerar)
 
     total = contador["n"]
     con_imagen = sum(1 for f in CAPTURAS.glob("*.png")) if CAPTURAS.exists() else 0

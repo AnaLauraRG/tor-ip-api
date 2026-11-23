@@ -1,0 +1,77 @@
+digraph arq {
+  graph [rankdir=TB, fontname="Helvetica", fontsize=11, nodesep=0.35, ranksep=0.42, pad=0.2, compound=true, newrank=true];
+  node  [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=10, fillcolor="#FFFFFF", color="#5B6770", margin="0.14,0.07"];
+  edge  [fontname="Helvetica", fontsize=9, color="#5B6770", fontcolor="#333333", arrowsize=0.7];
+
+  analista [label="Analista de seguridad\nSwagger UI · Postman · curl", fillcolor="#EEF2F7"];
+  sistemas [label="Sistemas de bloqueo\n(firewall, WAF)", fillcolor="#EEF2F7"];
+
+  subgraph cluster_host {
+    label="Host · Kali Linux con Docker / Podman"; labeljust=r; style="rounded"; color="#1F4E79"; fontcolor="#1F4E79";
+    puerto [label="Puerto 8000 publicado", fillcolor="#FDF2E3"];
+    envf   [label="Archivo .env (fuera del repositorio)\nJWT_SECRET · ADMIN_PASSWORD\nPOSTGRES_* · BIGDATACLOUD_API_KEY", fillcolor="#FDF2E3"];
+
+    subgraph cluster_compose {
+      label="Docker Compose · red interna"; labeljust=r; style="rounded,filled"; fillcolor="#F7F9FB"; color="#9DB3C8"; fontcolor="#5B6770";
+
+      subgraph cluster_api {
+        label="Contenedor api · python:3.13-slim · uvicorn\lusuario sin privilegios · HEALTHCHECK /health\l"; labeljust=l; labelloc=b;
+        style="rounded,filled"; fillcolor="#EEEDFE"; color="#7F77DD"; fontcolor="#3C3489";
+
+        mw  [label="Middleware HTTP\nregistra cada petición en la auditoría\nagrega cabeceras de seguridad"];
+        routers [shape=plain, style="", label=<
+          <table border="0" cellborder="1" cellspacing="0" cellpadding="4" bgcolor="#FFFFFF" color="#AFA9EC">
+            <tr><td colspan="2" bgcolor="#534AB7"><font color="#FFFFFF"><b>Endpoints</b></font></td></tr>
+            <tr><td align="left" balign="left"><b>POST</b> /auth/login</td><td align="left" balign="left">público</td></tr>
+            <tr><td align="left" balign="left"><b>GET</b> /ips · /ips/filtered</td><td align="left" balign="left">reader, admin</td></tr>
+            <tr><td align="left" balign="left"><b>GET</b> /exclusions</td><td align="left" balign="left">reader, admin</td></tr>
+            <tr><td align="left" balign="left"><b>POST · DELETE</b> /exclusions</td><td align="left" balign="left">admin</td></tr>
+            <tr><td align="left" balign="left">/users · /audit · /sources/refresh</td><td align="left" balign="left">admin</td></tr>
+            <tr><td align="left" balign="left"><b>GET</b> /health</td><td align="left" balign="left">público</td></tr>
+          </table>>];
+        sec [label="Seguridad (security.py)\ncontraseñas con bcrypt\nJWT HS256 · expira en 30 min\nrol y estado leídos de la base\nlogin: máx. 5 fallos / 15 min por IP"];
+        sched [label="Planificador (APScheduler)\nrevisa cada 5 min"];
+        ing   [label="Servicio de ingesta\ncada fuente cada 60 min (dan.me.uk ≥ 30)\nvalida y normaliza IPv4 / IPv6\nsi una fuente falla, conserva sus datos\nborra IPs no vistas en 48 h"];
+        {rank=same; routers; sec;}
+        {rank=same; sched; ing;}
+      }
+
+      subgraph cluster_db {
+        label="Contenedor db · postgres:16-alpine · sin puertos publicados"; labeljust=l; labelloc=b;
+        style="rounded,filled"; fillcolor="#E1F5EE"; color="#1D9E75"; fontcolor="#085041";
+        tablas [shape=plain, style="", label=<
+          <table border="0" cellborder="1" cellspacing="0" cellpadding="4" bgcolor="#FFFFFF" color="#5DCAA5">
+            <tr><td port="t"><b>tor_ips</b><br/>IP + fuente</td><td port="e"><b>excluded_ips</b><br/>exclusiones</td><td><b>users</b><br/>hash y rol</td><td><b>audit_log</b><br/>auditoría</td><td><b>source_status</b><br/>estado de fuentes</td></tr>
+          </table>>];
+        vol [label="Volumen pgdata", shape=cylinder, style="filled", fillcolor="#FFFFFF"];
+        {rank=same; tablas; vol;}
+      }
+    }
+  }
+
+  fuentes [shape=plain, style="", label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="5" bgcolor="#EEF2F7" color="#9DB3C8">
+      <tr><td bgcolor="#5B6770"><font color="#FFFFFF"><b>Fuentes externas (HTTPS)</b></font></td></tr>
+      <tr><td align="left" balign="left"><b>check.torproject.org</b><br/>texto plano · lista oficial</td></tr>
+      <tr><td align="left" balign="left"><b>dan.me.uk</b><br/>texto plano · máx. 1 descarga / 30 min</td></tr>
+      <tr><td align="left" balign="left"><b>bigdatacloud (api-bdc.net)</b><br/>JSON paginado · API key en cabecera</td></tr>
+    </table>>];
+
+  {rank=same; analista; sistemas;}
+  {rank=same; puerto; envf;}
+  puerto -> envf [style=invis];
+
+  analista -> puerto [label=" HTTP + token JWT"];
+  sistemas -> puerto [label=" GET /ips/filtered"];
+  puerto -> mw;
+  mw -> routers;
+  routers -> sec [dir=both, style=dashed, label=" valida token\n y rol", arrowsize=0.6];
+  envf -> mw [style=dotted, label=" variables de entorno", lhead=cluster_api];
+  routers -> sched [style=dotted, label=" refresh\n manual"];
+  sched -> ing;
+  ing -> fuentes [label=" descarga"];
+  routers -> tablas [label=" consultas SQL"];
+  ing -> tablas [label=" guarda IPs y estado"];
+  tablas -> vol [arrowhead=none, style=dotted];
+  {rank=same; ing; fuentes;}
+}

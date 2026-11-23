@@ -2,6 +2,12 @@
 
 API REST que unifica las IPs de nodos de salida de Tor de varias fuentes externas y permite excluir IPs del listado. Incluye autenticación con JWT, control de acceso por roles y auditoría de todas las peticiones.
 
+## Arquitectura
+
+![Arquitectura de Tor IP API](docs/diagramas/arquitectura.png)
+
+La API y PostgreSQL corren en dos contenedores dentro de una red interna de Docker Compose; solo el puerto 8000 queda publicado. Cada petición pasa por el middleware de auditoría, el endpoint exige el rol que le corresponde y el módulo de seguridad valida el token. En paralelo, el planificador descarga las tres fuentes y guarda las IPs en la base: los clientes leen de PostgreSQL y la ingesta escribe en PostgreSQL, así que una petición nunca espera a que se descargue una fuente.
+
 ## Endpoints
 
 | Método | Ruta | Descripción | Acceso |
@@ -120,7 +126,7 @@ Las pruebas simulan las fuentes externas; no hacen peticiones a internet. Para c
 
 ## Documentación en PDF
 
-[`docs/Documentacion_Tor_IP_API.pdf`](docs/Documentacion_Tor_IP_API.pdf) reúne la ejecución local y con Docker, la configuración, los endpoints, las capturas de cada request y response y el despliegue en la nube.
+[`docs/Documentacion_Tor_IP_API.pdf`](docs/Documentacion_Tor_IP_API.pdf) reúne la arquitectura, la ejecución local y con Docker, la configuración, los endpoints, las capturas de cada request y response, el informe de seguridad (SAST) y el despliegue en la nube. Tiene un índice con enlaces a cada sección y marcadores para navegarlo desde el panel lateral del lector de PDF.
 
 El PDF se genera con `docs/generar_pdf.py`. Cada evidencia tiene un nombre de archivo asignado; al guardar la captura con ese nombre en `docs/capturas/` y volver a generar el PDF, la imagen se inserta en su lugar:
 
@@ -131,15 +137,16 @@ python3 docs/generar_pdf.py
 
 ## Despliegue en la nube
 
-[`docs/despliegue-nube.md`](docs/despliegue-nube.md) explica cómo se ejecutaría la solución en **AWS** (no está desplegada; es una propuesta de diseño):
+[`docs/despliegue-nube.md`](docs/despliegue-nube.md) explica a fondo cómo se ejecutaría la solución en **AWS** (no está desplegada; es una propuesta de diseño). Incluye:
 
-- **ECR** para la imagen y **ECS Fargate** para ejecutarla en subredes privadas, en dos servicios con la misma imagen: `api` (varias tareas, sin planificador) e `ingesta` (una sola tarea, con planificador), para que las fuentes no se descarguen varias veces.
-- **RDS for PostgreSQL 16** Multi-AZ, cifrada y con TLS obligatorio.
-- **Secrets Manager** en lugar del archivo `.env`.
-- **Application Load Balancer** con HTTPS y **AWS WAF** con límite de tasa en `/auth/login` y lista de IPs permitidas.
-- **CloudWatch** para logs y alarmas, y despliegue desde GitHub Actions con OIDC.
-
-El documento incluye el diagrama, los pasos del primer despliegue y los equivalentes en GCP y Azure.
+- **Arquitectura y red:** VPC en dos zonas con subredes públicas, de aplicación y de datos; grupos de seguridad encadenados y endpoints de VPC.
+- **Cómputo:** ECS Fargate con dos servicios de la misma imagen, `api` (2 a 4 tareas, sin planificador) e `ingesta` (una sola tarea), y un extracto de la definición de tarea.
+- **Datos y secretos:** RDS for PostgreSQL 16 Multi-AZ, cifrada y con TLS obligatorio; secretos en Secrets Manager y su rotación.
+- **Permisos:** roles de IAM con mínimo privilegio y despliegue desde GitHub Actions con OIDC limitado a la rama `main`.
+- **Entrada:** balanceador con HTTPS y AWS WAF (lista de IPs permitidas, reglas administradas y límite de tasa en `/auth/login`).
+- **Operación:** alarmas de CloudWatch, CloudTrail, GuardDuty, escalado, objetivos de recuperación (RPO y RTO) y tabla de amenazas y controles.
+- **Uso del resultado:** cómo alimentar un *IP set* de WAF con `/ips/filtered` para bloquear el tráfico de Tor.
+- Pasos del primer despliegue, costos y equivalentes en GCP y Azure.
 
 ## Análisis de seguridad y CI
 
@@ -174,5 +181,5 @@ El documento incluye el diagrama, los pasos del primer despliegue y los equivale
 
 ### Limitaciones conocidas
 
-- La IP de origen se toma de la conexión directa. Detrás de un balanceador habría que confiar en `X-Forwarded-For` solo desde ese balanceador (ver la sección 6 de [`docs/despliegue-nube.md`](docs/despliegue-nube.md)). Con Podman sin privilegios, según la configuración de red, todas las peticiones pueden aparecer con la IP de la puerta de enlace del contenedor, y en ese caso el límite de login sería global en lugar de por cliente.
+- La IP de origen se toma de la conexión directa. Detrás de un balanceador habría que confiar en `X-Forwarded-For` solo desde ese balanceador (ver la sección 8 de [`docs/despliegue-nube.md`](docs/despliegue-nube.md)). Con Podman sin privilegios, según la configuración de red, todas las peticiones pueden aparecer con la IP de la puerta de enlace del contenedor, y en ese caso el límite de login sería global en lugar de por cliente.
 - Las tablas se crean con `create_all`, que agrega tablas nuevas pero no modifica las existentes. Para cambios de esquema en producción se usaría una herramienta de migraciones como Alembic.
