@@ -1,0 +1,7 @@
+# Use this workspace to collaborate
+workspace:
+  id: 104bb88e-5f90-46b1-8ed6-c146653db726
+
+localResources:
+  collections:
+    - ../tor-ip-api.postman_collection.json

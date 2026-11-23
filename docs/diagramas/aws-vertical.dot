@@ -1,0 +1,47 @@
+digraph aws {
+  graph [rankdir=TB, fontname="Helvetica", fontsize=11, nodesep=0.35, ranksep=0.45, pad=0.2, compound=true];
+  node  [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=10, fillcolor="#FFFFFF", color="#5B6770"];
+  edge  [fontname="Helvetica", fontsize=8.5, color="#5B6770", fontcolor="#333333"];
+
+  usuarios [label="Analistas y\nsistemas de bloqueo\n(firewall / WAF)", fillcolor="#EEF2F7"];
+  fuentes  [label="Fuentes de Tor\ntorproject · dan.me.uk\nbigdatacloud", fillcolor="#EEF2F7"];
+  github   [label="GitHub Actions\n(OIDC, sin claves fijas)", fillcolor="#EEF2F7"];
+
+  subgraph cluster_aws {
+    label="Cuenta AWS · región us-east-1"; style="rounded"; color="#1F4E79"; fontcolor="#1F4E79";
+    waf [label="AWS WAF\nreglas administradas\nlímite de tasa en /auth/login\nlista de IPs permitidas", fillcolor="#FDF2E3"];
+    ecr [label="Amazon ECR\nimagen inmutable\nescaneo al subir"];
+    sm  [label="Secrets Manager\nJWT_SECRET · ADMIN_PASSWORD\nDATABASE_URL · BIGDATACLOUD_API_KEY", fillcolor="#FDF2E3"];
+    cw  [label="CloudWatch\nlogs · métricas · alarmas"];
+
+    subgraph cluster_vpc {
+      label="VPC (2 zonas de disponibilidad)"; style="rounded,dashed"; color="#5B6770"; fontcolor="#5B6770";
+      subgraph cluster_pub {
+        label="Subredes públicas"; style="rounded,filled"; fillcolor="#F3F7FB"; color="#9DB3C8"; fontcolor="#5B6770";
+        alb [label="Application Load Balancer\nHTTPS (certificado ACM)\nHTTP → HTTPS"];
+        nat [label="NAT Gateway"];
+      }
+      subgraph cluster_priv {
+        label="Subredes privadas"; style="rounded,filled"; fillcolor="#F2F8F2"; color="#9CC49C"; fontcolor="#5B6770";
+        api  [label="ECS Fargate · servicio api\n2+ tareas · SCHEDULER_ENABLED=false", fillcolor="#E8F1FA"];
+        ing  [label="ECS Fargate · servicio ingesta\n1 tarea · SCHEDULER_ENABLED=true", fillcolor="#E8F1FA"];
+        rds  [label="RDS PostgreSQL 16\nMulti-AZ · cifrado KMS\nTLS obligatorio · backups", fillcolor="#E8F1FA"];
+      }
+    }
+  }
+
+  usuarios -> waf [label="HTTPS"];
+  waf -> alb;
+  alb -> api [label="8000\n(solo desde el ALB)"];
+  api -> rds [label="5432 TLS"];
+  ing -> rds [label="5432 TLS"];
+  ing -> nat [label="descarga\nperiódica"];
+  nat -> fuentes [label="HTTPS"];
+  github -> ecr [label="build · Trivy · push"];
+  ecr -> api [style=dashed];
+  ecr -> ing [style=dashed];
+  sm -> api [style=dashed];
+  sm -> ing [style=dashed];
+  api -> cw [style=dotted];
+  ing -> cw [style=dotted];
+}

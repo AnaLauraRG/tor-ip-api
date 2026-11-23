@@ -2,8 +2,6 @@
 
 API REST que unifica las IPs de nodos de salida de Tor de varias fuentes externas y permite excluir IPs del listado. Incluye autenticación con JWT, control de acceso por roles y auditoría de todas las peticiones.
 
-> Estado: núcleo, autenticación, roles, auditoría e informe SAST completos. Las capturas y el documento de despliegue en la nube se agregan en fases posteriores.
-
 ## Endpoints
 
 | Método | Ruta | Descripción | Acceso |
@@ -120,6 +118,29 @@ pytest
 
 Las pruebas simulan las fuentes externas; no hacen peticiones a internet. Para correrlas contra PostgreSQL: `TEST_DATABASE_URL=postgresql+psycopg://... pytest`.
 
+## Documentación en PDF
+
+[`docs/Documentacion_Tor_IP_API.pdf`](docs/Documentacion_Tor_IP_API.pdf) reúne la ejecución local y con Docker, la configuración, los endpoints, las capturas de cada request y response y el despliegue en la nube.
+
+El PDF se genera con `docs/generar_pdf.py`. Cada evidencia tiene un nombre de archivo asignado; al guardar la captura con ese nombre en `docs/capturas/` y volver a generar el PDF, la imagen se inserta en su lugar:
+
+```bash
+sudo apt install python3-reportlab python3-pil   # solo la primera vez
+python3 docs/generar_pdf.py
+```
+
+## Despliegue en la nube
+
+[`docs/despliegue-nube.md`](docs/despliegue-nube.md) explica cómo se ejecutaría la solución en **AWS** (no está desplegada; es una propuesta de diseño):
+
+- **ECR** para la imagen y **ECS Fargate** para ejecutarla en subredes privadas, en dos servicios con la misma imagen: `api` (varias tareas, sin planificador) e `ingesta` (una sola tarea, con planificador), para que las fuentes no se descarguen varias veces.
+- **RDS for PostgreSQL 16** Multi-AZ, cifrada y con TLS obligatorio.
+- **Secrets Manager** en lugar del archivo `.env`.
+- **Application Load Balancer** con HTTPS y **AWS WAF** con límite de tasa en `/auth/login` y lista de IPs permitidas.
+- **CloudWatch** para logs y alarmas, y despliegue desde GitHub Actions con OIDC.
+
+El documento incluye el diagrama, los pasos del primer despliegue y los equivalentes en GCP y Azure.
+
 ## Análisis de seguridad y CI
 
 - **Informe SAST:** [`docs/sast-report.md`](docs/sast-report.md), con los resultados de Bandit, Semgrep, pip-audit, Gitleaks y Trivy, y la decisión tomada sobre cada hallazgo.
@@ -153,5 +174,5 @@ Las pruebas simulan las fuentes externas; no hacen peticiones a internet. Para c
 
 ### Limitaciones conocidas
 
-- La IP de origen se toma de la conexión directa. Detrás de un balanceador habría que confiar en `X-Forwarded-For` solo desde ese balanceador. Con Podman sin privilegios, según la configuración de red, todas las peticiones pueden aparecer con la IP de la puerta de enlace del contenedor, y en ese caso el límite de login sería global en lugar de por cliente.
+- La IP de origen se toma de la conexión directa. Detrás de un balanceador habría que confiar en `X-Forwarded-For` solo desde ese balanceador (ver la sección 6 de [`docs/despliegue-nube.md`](docs/despliegue-nube.md)). Con Podman sin privilegios, según la configuración de red, todas las peticiones pueden aparecer con la IP de la puerta de enlace del contenedor, y en ese caso el límite de login sería global en lugar de por cliente.
 - Las tablas se crean con `create_all`, que agrega tablas nuevas pero no modifica las existentes. Para cambios de esquema en producción se usaría una herramienta de migraciones como Alembic.
