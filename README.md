@@ -28,35 +28,128 @@ Los tres endpoints obligatorios del reto son `GET /ips`, `POST /exclusions` y `G
 
 Documentación interactiva (Swagger): `http://localhost:8000/docs`. Pulsa **Authorize**, ingresa usuario y contraseña, y todos los endpoints usarán tu token.
 
-## Ejecutar con Docker
+## Paso a paso: descargar y ejecutar
 
-```bash
-cp .env.example .env
-openssl rand -base64 48    # copia el resultado en JWT_SECRET
-nano .env                  # completa JWT_SECRET, ADMIN_PASSWORD, POSTGRES_PASSWORD y BIGDATACLOUD_API_KEY
-docker compose up --build
-```
+### 1. Requisitos
 
-La API queda en `http://localhost:8000`. Al arrancar se crea el administrador inicial y corre el primer ciclo de ingesta.
+| Herramienta | Para qué | Cómo comprobarlo |
+|---|---|---|
+| Git | Descargar el repositorio | `git --version` |
+| Docker con Compose (o Podman) | Ejecutar la API y PostgreSQL | `docker compose version` |
+| Acceso al repositorio | Es privado: hay que aceptar la invitación de GitHub | Abrir `https://github.com/AnaLauraRG/tor-ip-api` con tu cuenta |
+| API key de bigdatacloud (opcional) | Usar la tercera fuente; sin ella se omite | Cuenta gratuita en bigdatacloud.com |
 
 Con Podman en lugar de Docker, activa antes su socket: `systemctl --user enable --now podman.socket`.
 
-## Ejecutar localmente (sin Docker)
+### 2. Descargar el proyecto
+
+Como el repositorio es privado, GitHub pide autenticarte al clonar. Usa **una** de estas opciones:
+
+```bash
+# Opción A: HTTPS. Como contraseña se usa un token personal de GitHub
+# (Settings → Developer settings → Personal access tokens), no la contraseña de la cuenta.
+git clone https://github.com/AnaLauraRG/tor-ip-api.git
+
+# Opción B: SSH, si ya tienes una llave SSH registrada en GitHub
+git clone git@github.com:AnaLauraRG/tor-ip-api.git
+
+# Opción C: GitHub CLI, después de `gh auth login`
+gh repo clone AnaLauraRG/tor-ip-api
+```
+
+Después entra a la carpeta; todos los comandos siguientes se ejecutan desde ahí:
+
+```bash
+cd tor-ip-api
+```
+
+### 3. Configurar el archivo `.env`
+
+La configuración y los secretos van en un archivo `.env` que **no** se sube al repositorio. Se crea a partir de la plantilla:
+
+```bash
+cp .env.example .env
+openssl rand -base64 48    # genera una clave; cópiala para JWT_SECRET
+nano .env
+```
+
+Completa al menos estos valores:
+
+| Variable | Qué poner |
+|---|---|
+| `POSTGRES_PASSWORD` | Una contraseña para PostgreSQL, solo con letras y números (va dentro de una URL) |
+| `JWT_SECRET` | La clave que generó `openssl` (mínimo 32 caracteres; sin ella la API no arranca) |
+| `ADMIN_PASSWORD` | La contraseña del administrador inicial, de 12 caracteres o más |
+| `BIGDATACLOUD_API_KEY` | Tu API key de bigdatacloud, o vacía para omitir esa fuente |
+
+El usuario del administrador es `admin` (variable `ADMIN_USERNAME`). Se crea solo en el primer arranque: si después cambias `ADMIN_PASSWORD`, no se modifica el usuario que ya existe.
+
+### 4. Levantar la API
+
+```bash
+docker compose up --build -d
+```
+
+La primera vez tarda unos minutos, porque construye la imagen y descarga PostgreSQL. Compose levanta la base, espera a que esté lista y arranca la API; al iniciar, la API crea las tablas, el administrador y descarga las fuentes por primera vez.
+
+### 5. Comprobar que funciona
+
+```bash
+docker compose ps                    # db y api en estado "Up" (healthy)
+curl http://localhost:8000/health    # las tres fuentes con "last_status": "ok"
+docker compose logs -f api           # ver los logs en vivo (Ctrl+C para salir)
+```
+
+Si `/health` aún muestra alguna fuente sin datos, espera uno o dos minutos a que termine la primera descarga.
+
+### 6. Probar los endpoints
+
+**Desde el navegador:** abre `http://localhost:8000/docs`, pulsa **Authorize**, escribe `admin` y la contraseña de tu `.env`, y ejecuta cualquier endpoint con **Try it out → Execute**.
+
+**Desde la terminal** (la contraseña se pide sin mostrarse en pantalla; funciona en bash y en zsh):
+
+```bash
+printf "Contraseña del admin: "; read -rs PASS; echo
+TOKEN=$(curl -s -X POST http://localhost:8000/auth/login \
+  --data-urlencode "username=admin" --data-urlencode "password=$PASS" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+AUTH="Authorization: Bearer $TOKEN"
+
+curl -H "$AUTH" http://localhost:8000/ips             # 1. todas las IPs de Tor
+curl -H "$AUTH" -X POST http://localhost:8000/exclusions \
+     -H "Content-Type: application/json" \
+     -d '{"ip": "185.220.101.1", "reason": "falso positivo"}'   # 2. excluir una IP
+curl -H "$AUTH" http://localhost:8000/ips/filtered    # 3. IPs sin las excluidas
+```
+
+También puedes importar la [colección de Postman](#colección-de-postman), que ejecuta 25 peticiones con sus verificaciones.
+
+### 7. Detener, actualizar o empezar de cero
+
+```bash
+docker compose down                       # detiene la API y la base; los datos se conservan
+git pull && docker compose up --build -d  # descarga los últimos cambios y vuelve a levantar
+docker compose down -v                    # detiene y BORRA la base (usuarios, exclusiones y auditoría)
+```
+
+### Alternativa: ejecutar sin Docker
+
+Útil para desarrollo. Requiere Python 3.13:
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 cp .env.example .env       # completa al menos JWT_SECRET y ADMIN_PASSWORD
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --port 8001
 ```
 
-Sin `DATABASE_URL` definida se usa un archivo SQLite local (`tor.db`), suficiente para desarrollo. Para usar PostgreSQL:
+La API queda en `http://localhost:8001` (el puerto 8001 evita chocar con la versión en Docker). Sin `DATABASE_URL` definida se usa un archivo SQLite local (`tor.db`), suficiente para desarrollo. Para usar PostgreSQL:
 
 ```bash
 export DATABASE_URL=postgresql+psycopg://usuario:clave@localhost:5432/tor
 ```
 
-## Ejemplos
+## Más ejemplos
 
 ```bash
 # Obtener un token (el login recibe un formulario, no JSON)

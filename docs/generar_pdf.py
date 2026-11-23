@@ -265,12 +265,26 @@ def arquitectura():
 
 
 def requisitos_y_config():
-    h = [p("3. Requisitos", "h1")]
+    h = [p("3. Requisitos y descarga", "h1")]
     h += vinetas([
+        "<b>Git</b>, para descargar el repositorio, y acceso a él: es privado, así que hay que aceptar "
+        "antes la invitación de GitHub.",
         "<b>Con Docker:</b> Docker con Docker Compose, o Podman con su socket activo.",
         "<b>Sin Docker:</b> Python 3.13 y, opcionalmente, PostgreSQL 16.",
         "Una API key gratuita de bigdatacloud.com (opcional: sin ella, esa fuente se omite).",
     ])
+    h.append(p("Descargar el proyecto", "h2"))
+    h.append(p("Como el repositorio es privado, GitHub pide autenticarse al clonar. Basta con una de estas "
+               "opciones; en la primera, la contraseña que pide Git es un token personal de GitHub "
+               "(<i>Settings → Developer settings → Personal access tokens</i>), no la contraseña de la cuenta."))
+    h += codigo(
+        "git clone https://github.com/AnaLauraRG/tor-ip-api.git     # HTTPS con token personal\n"
+        "git clone git@github.com:AnaLauraRG/tor-ip-api.git         # SSH con llave registrada\n"
+        "gh repo clone AnaLauraRG/tor-ip-api                        # GitHub CLI\n"
+        "cd tor-ip-api")
+    h.append(p("Todos los comandos de las secciones siguientes se ejecutan desde la carpeta "
+               "<font face='Courier'>tor-ip-api</font>. Para actualizar más adelante: "
+               "<font face='Courier'>git pull &amp;&amp; docker compose up --build -d</font>."))
     h.append(Spacer(1, 6))
     h.append(p("4. Configuración", "h1"))
     h.append(p("La configuración se lee del archivo <font face='Courier'>.env</font>, que nunca se sube "
